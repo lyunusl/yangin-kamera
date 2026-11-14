@@ -94,34 +94,42 @@ def surum() -> str | None:
 
 
 def _dosyalar(klasor: Path) -> list[Path]:
-    # .yeni: yarım kopya ya da süren model indirmesi; motora girmez
-    return sorted(p for p in klasor.rglob("*") if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".yeni")
+    return sorted(p for p in klasor.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+
+
+def _klasor_dosyalari(klasor: Path) -> dict[Path, Path]:
+    """{göreli yol: kaynak yol}: klasördeki bütün dosyalar."""
+    return {p.relative_to(klasor): p for p in _dosyalar(klasor)}
 
 
 def _dosya_ozeti(p: Path) -> bytes:
-    """Dosyanın tüm içeriğinin SHA-256 özeti."""
+    """Dosyanın tüm içeriğinin SHA-256 özeti. Bu süreçte doğrulanmış model dosyası yeniden okunmaz."""
+    import studio_kurulum
+
+    bilinen = studio_kurulum.dogrulanmis_ozet(p)
+    if bilinen is not None:
+        return bilinen
     with p.open("rb") as dosya:
         return hashlib.file_digest(dosya, "sha256").digest()
 
 
-def _parmak_izi(klasor: Path) -> str:
-    """Klasörün içerik imzası: dosya adları ve içerik özetleri. Dosya tarihine bakılmaz: exe her açılışta dosyalarını
-    geçici bir klasöre yeni tarihle açar; tarih imzaya girseydi motor her açılışta yeniden kopyalanırdı."""
+def _parmak_izi(kaynaklar: dict[Path, Path]) -> str:
+    """Kaynak dosyaların içerik imzası: göreli adlar ve içerik özetleri. Dosya tarihine bakılmaz: exe her açılışta
+    dosyalarını geçici bir klasöre yeni tarihle açar; tarih imzaya girseydi motor her açılışta yeniden kopyalanırdı."""
     h = hashlib.sha256()
-    dosyalar = _dosyalar(klasor)
-    for p in dosyalar:
-        h.update(p.relative_to(klasor).as_posix().encode("utf-8") + b"\0" + _dosya_ozeti(p))
-    return f"{len(dosyalar)}:{h.hexdigest()[:40]}"
+    for goreli in sorted(kaynaklar):
+        h.update(goreli.as_posix().encode("utf-8") + b"\0" + _dosya_ozeti(kaynaklar[goreli]))
+    return f"{len(kaynaklar)}:{h.hexdigest()[:40]}"
 
 
-def _esitle(kaynak: Path, hedef: Path) -> int:
-    """Hedef klasörü kaynağın aynısı yapar; yalnızca içeriği farklı olan dosyalara dokunur. Dönüş: kopyalanan dosya sayısı.
+def _esitle(kaynaklar: dict[Path, Path], hedef: Path) -> int:
+    """Hedef klasörü kaynak dosyaların ({göreli yol: kaynak yol}) aynısı yapar; yalnızca içeriği farklı olan dosyalara
+    dokunur. Dönüş: kopyalanan dosya sayısı.
 
     Aynı kalan dosyalar yeniden yazılmaz: Studio açıkken yüklediği kitaplıklar (onnxruntime) kilitlidir ve üstlerine
     yazılamaz. Gerçekten değişmiş bir dosya kilitliyse anlaşılır bir hata verilir. Kaynakta artık olmayan dosyalar silinir;
     silinemeyen (kullanımda olan) eski dosya yerinde kalır."""
     hedef.mkdir(parents=True, exist_ok=True)
-    kaynaklar = {p.relative_to(kaynak): p for p in _dosyalar(kaynak)}
     kopya = 0
     for goreli, p in kaynaklar.items():
         h = hedef / goreli
@@ -155,21 +163,29 @@ def _esitle(kaynak: Path, hedef: Path) -> int:
 
 def motoru_yerlestir(hedef: Path) -> Path:
     """Motoru (yangin_motor, modeller, deps) Studio'nun özel blok klasörünün yanına kopyalar; değişmediyse dokunmaz.
-    Modeller, programın kullandığı model klasöründen (yollar.MODELLER; exe'de indirilen model de oradadır) alınır."""
+    Modeller studio_kurulum.motor_modelleri'nden gelir: exe'de paket dosyaları (işaret, DLL) yalnızca programla gelen
+    kopyadan, veri klasöründen yalnızca bu süreçte SHA-256 ile doğrulanmış model dosyası; başka hiçbir dosya girmez."""
+    import studio_kurulum
+
     if not (MOTOR_KAYNAK / "yangin_motor").is_dir():
         raise StudioHatasi(f"Motor kaynağı bulunamadı: {MOTOR_KAYNAK}")
     hedef.mkdir(parents=True, exist_ok=True)
     imzalar = []
     for ad in ("yangin_motor", "modeller", "deps"):
-        kaynak = yollar.MODELLER if ad == "modeller" else MOTOR_KAYNAK / ad
-        if not kaynak.is_dir():
-            continue
-        imza = _parmak_izi(kaynak)
+        if ad == "modeller":
+            kaynaklar = {Path(dosya): yol for dosya, yol in studio_kurulum.motor_modelleri()}
+            if not kaynaklar:
+                continue
+        else:
+            if not (MOTOR_KAYNAK / ad).is_dir():
+                continue
+            kaynaklar = _klasor_dosyalari(MOTOR_KAYNAK / ad)
+        imza = _parmak_izi(kaynaklar)
         imzalar.append(imza)
         isaret = hedef / f"{ad}.surum"
         if (hedef / ad).is_dir() and isaret.exists() and isaret.read_text(encoding="ascii") == imza:
             continue
-        _esitle(kaynak, hedef / ad)
+        _esitle(kaynaklar, hedef / ad)
         isaret.write_text(imza, encoding="ascii")
     surum = hedef / "surum.txt"  # yalnızca değiştiyse yazılır: bloklar bu dosyanın tarihine bakarak motoru yeniden yükler
     if not surum.exists() or surum.read_text(encoding="ascii") != "|".join(imzalar):

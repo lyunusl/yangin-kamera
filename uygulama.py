@@ -542,17 +542,52 @@ def sifreyi_temizle(ayar: dict) -> list[str]:
 def model_kilidi() -> dict:
     """Model paketinin durumu. Panel modeli açmaz: korumalı paket yalnızca AugeLab Studio'nun içinde, etkin lisansla açılır."""
     import kurallar
+    import studio_kurulum
 
-    return kurallar.model_kilidi(str(yollar.MODELLER))
+    if not yollar.DONDURULMUS:
+        return kurallar.model_kilidi(str(yollar.MODELLER))
+    if not studio_kurulum.model_gerekli():  # düz derleme: model programla gelir
+        return kurallar.model_kilidi(str(yollar.PAKET_MODELLER))
+    # Exe, korumalı paket: işaret ve DLL programla gelen kopyadan; model veri klasöründen ve yalnızca bu süreçte
+    # SHA-256 ile doğrulanmışsa (Studio'ya giden görünüm: studio_kurulum.motor_modelleri).
+    from yangin_motor import community_model as cm
+
+    sonuc = {"sifreli": True, "community": True}
+    try:
+        kimlik = cm._kimlik(yollar.PAKET_MODELLER)
+        if not cm._dosya(yollar.PAKET_MODELLER, kimlik).is_file():
+            raise cm.LisansHatasi(cm._MESAJ[1])
+        if not studio_kurulum.model_dogrulandi():
+            return dict(sonuc, durum="hazirlaniyor", mesaj="Algılama modeli hazırlanıyor.")
+        with studio_kurulum.model_yolu().open("rb") as f:
+            if f.read(24) != cm.SIHIR + kimlik:
+                raise cm.LisansHatasi(cm._MESAJ[1])
+    except (OSError, cm.LisansHatasi) as e:
+        return dict(sonuc, durum="bozuk", mesaj=str(e) if isinstance(e, cm.LisansHatasi) else cm._MESAJ[1])
+    return dict(sonuc, durum="studio_kosusunda_dogrulanir")
+
+
+def _model_var() -> bool:
+    """Algılama modeli kullanılabilir mi (exe'de korumalı pakette: bu süreçte doğrulanmış model dosyası)."""
+    import kurallar
+    import studio_kurulum
+
+    if not yollar.DONDURULMUS:
+        return kurallar.model_var(str(yollar.MODEL))
+    if studio_kurulum.model_gerekli():
+        return studio_kurulum.model_dogrulandi()
+    return kurallar.model_var(str(yollar.PAKET_MODELLER / kurallar.MODEL_DOSYASI))
 
 
 def _model_indirme_engeli() -> str | None:
-    """Korumalı paketin model dosyası henüz indirilmediyse nedeni (indiriliyor ya da indirilmesi gerekiyor)."""
+    """Korumalı paketin model dosyası hazır değilse nedeni (doğrulanıyor, indiriliyor ya da indirilmesi gerekiyor)."""
     import studio_kurulum
 
     d = studio_kurulum.model_durumu()
     if not d["eksik"]:
         return None
+    if d["asama"] == "dogrulaniyor":
+        return "Algılama modeli hazırlanıyor (dosya doğrulanıyor). Birkaç saniye sonra analizi yeniden başlatın."
     if d["asama"] == "indiriliyor":
         yuzde = round(100 * d["indirilen"] / d["toplam"]) if d["toplam"] else 0
         return f"Algılama modeli indiriliyor (%{yuzde}). İndirme bitince analizi yeniden başlatın."
@@ -562,15 +597,13 @@ def _model_indirme_engeli() -> str | None:
 
 def _model_engeli() -> str | None:
     """Analiz başlatılamıyorsa nedeni (model dosyası yok ya da paket bozuk); başlatılabiliyorsa None."""
-    import kurallar
-
     indirme = _model_indirme_engeli()
     if indirme:
         return indirme
     kilit = model_kilidi()
     if kilit["sifreli"] and kilit["durum"] != "studio_kosusunda_dogrulanir":
         return kilit.get("mesaj") or "Model paketi açılamıyor."
-    if not kurallar.model_var(str(yollar.MODEL)):
+    if not _model_var():
         return "Model dosyası yerinde değil (motor/modeller). Programı yeniden kurun."
     return None
 
@@ -578,7 +611,6 @@ def _model_engeli() -> str | None:
 def durum() -> dict:
     import depo
     import kamera
-    import kurallar
     import rapor
     import studio_kurulum
 
@@ -590,7 +622,7 @@ def durum() -> dict:
             k["sifre"] = False
     return {
         "uygulama": yollar.UYGULAMA, "surum": yollar.SURUM, "veri": str(yollar.VERI),
-        "model": kurallar.model_var(str(yollar.MODEL)), "model_kilidi": model_kilidi(),
+        "model": _model_var(), "model_kilidi": model_kilidi(),
         "ornek_var": bool(yollar.ornek_kodlar()), "kameralar": kameralar, "genel": depo.genel(), "dinlenen": DINLENEN,
         "is": AKTIF.ozet() if AKTIF else None, "studio": studio_durumu(), "son_kritik": rapor.son_kritik(),
         "studio_kurulu": studio_kurulum.kurulu_studio() is not None,
@@ -631,7 +663,8 @@ def katalog() -> dict:
     import kamera
     import kurallar
 
-    eksik = kurallar.eksik_modeller(str(yollar.MODELLER))  # model dosyası yerinde değilse kurallar panelde işaretlenir
+    # model kullanılabilir değilse kurallar panelde işaretlenir (exe'de korumalı pakette: doğrulanmış model dosyası)
+    eksik = {} if _model_var() else {k["kod"]: kurallar.MODEL_DOSYASI for k in kurallar.KURALLAR}
     return {
         "kurallar": [{**k, "model_eksik": eksik[k["kod"]]} if k["kod"] in eksik else k for k in kurallar.KURALLAR],
         "kategoriler": kurallar.KATEGORILER, "bolge_turleri": kurallar.BOLGE_TURLERI,
@@ -1174,7 +1207,7 @@ def main() -> None:
     print(f"Yangın Kamera {yollar.SURUM}")
     if yollar.hazirla():
         print("İlk kurulum: veri klasörü hazırlandı.")
-    if yollar.DONDURULMUS:  # kurulumda indirilemediyse algılama modeli bir kez kendiliğinden indirilir
+    if yollar.DONDURULMUS:  # algılama modeli arka planda bir kez SHA-256 ile doğrulanır; yoksa ya da bozuksa indirilir
         import studio_kurulum
 
         studio_kurulum.model_indirmeyi_baslat()

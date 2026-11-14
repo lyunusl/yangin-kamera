@@ -6,7 +6,6 @@ VERI:   kullanıcının verisi (ayarlar, veritabanı, klipler). Exe'de %LOCALAPP
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -38,9 +37,11 @@ GENEL_AYAR = VERI / "genel.json"
 WEB = KAYNAK / "web"
 ORNEKLER = KAYNAK / "ornekler"
 MOTOR = KAYNAK / "motor"                                    # AugeLab Studio'ya yerleştirilen motor (yangin_motor, modeller, deps)
-# Model klasörü. Exe'de veri klasöründedir: programla gelen paket dosyaları açılışta oraya kopyalanır (modelleri_hazirla),
-# büyük model dosyası ise kurulumda (ya da ilk açılışta panelde) indirilip oraya konur.
-MODELLER = VERI / "modeller" if DONDURULMUS else MOTOR / "modeller"
+# PAKET_MODELLER: programla gelen model paketi dosyaları (işaret, DLL; düz derlemede düz model). Güvenilir kopyadır.
+# MODELLER: büyük model dosyasının yeri. Exe'de veri klasöründedir: kurulumda (ya da ilk açılışta panelde) indirilip
+# oraya konur ve motora yalnızca SHA-256 ile doğrulanmışsa girer (studio_kurulum.motor_modelleri). Kaynak koddan ikisi aynıdır.
+PAKET_MODELLER = MOTOR / "modeller"
+MODELLER = VERI / "modeller" if DONDURULMUS else PAKET_MODELLER
 MODEL = MODELLER / "yangin-duman-512.onnx"                  # alev ve duman tespiti
 
 # Örnek videolar (ornekler/videolar/<kod>.mp4). Ayarı ornekler/ayar/<kod>.json dosyasından okunur; dosya yoksa buradaki
@@ -130,45 +131,11 @@ def cocuk_bagla(surec) -> None:
         pass
 
 
-def _ozet(p: Path) -> bytes:
-    with p.open("rb") as f:
-        return hashlib.file_digest(f, "sha256").digest()
-
-
-def modelleri_hazirla(kaynak: Path, hedef: Path) -> list[str]:
-    """Programla gelen model paketi dosyalarını (kaynak) model klasörüne (hedef) kopyalar: eksikse ya da boyutu veya
-    içeriği farklıysa. Hedefteki başka dosyalara (indirilen model) dokunulmaz. Dönüş: kopyalanan dosyaların adları."""
-    if not kaynak.is_dir():
-        return []
-    hedef.mkdir(parents=True, exist_ok=True)
-    kopya = []
-    for p in sorted(kaynak.iterdir()):
-        if not p.is_file():
-            continue
-        h = hedef / p.name
-        gecici = h.with_name(h.name + ".yeni")
-        try:
-            if h.is_file() and h.stat().st_size == p.stat().st_size and _ozet(h) == _ozet(p):
-                continue
-            shutil.copyfile(p, gecici)
-            os.replace(gecici, h)
-            kopya.append(p.name)
-        except OSError as e:  # dosya kullanımda olabilir: program yine açılır, analiz başlarken model durumu gösterilir
-            print(f"Model dosyası kopyalanamadı ({p.name}): {e.strerror or e}", flush=True)
-            try:
-                gecici.unlink(missing_ok=True)
-            except OSError:
-                pass
-    return kopya
-
-
 def hazirla() -> bool:
     """Veri klasörünü kurar, örnek videoları ve ayarlarını (yoksa) kopyalar. İlk kurulumsa True döner."""
     ilk = not VERI.exists()
     for d in (AYAR, VIDEOLAR, CIKTI):
         d.mkdir(parents=True, exist_ok=True)
-    if DONDURULMUS:
-        modelleri_hazirla(MOTOR / "modeller", MODELLER)
     for kod in ornek_kodlar():
         video, ayar = VIDEOLAR / f"{kod}.mp4", AYAR / f"{kod}.json"
         if not video.exists():

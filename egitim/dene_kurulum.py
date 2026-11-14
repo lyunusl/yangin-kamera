@@ -318,6 +318,9 @@ class ModelIndirmeTesti(unittest.TestCase):
         self.addCleanup(self.sunucu.kapat)
         self.sunucu.govde = self.icerik
         self.enterContext(patch.object(kurulum.yollar, "MODELLER", self.klasor))
+        self.enterContext(patch.object(kurulum.yollar, "PAKET_MODELLER", self.klasor))  # kaynak koddan: ikisi aynı klasör
+        self.enterContext(patch.object(kurulum.yollar, "DONDURULMUS", False))
+        self.enterContext(patch.dict(kurulum._DOGRULANAN, {"yol": None, "boyut": None, "zaman": None}))
         self.enterContext(patch.object(kurulum, "MODEL_URL", self.sunucu.url))
         self.enterContext(patch.object(kurulum, "MODEL_BOYUT", len(self.icerik)))
         self.enterContext(patch.object(kurulum, "MODEL_SHA256", hashlib.sha256(self.icerik).hexdigest()))
@@ -330,10 +333,11 @@ class ModelIndirmeTesti(unittest.TestCase):
     def test_dogru_dosya_indirilir_ve_yerine_konur(self):
         self.assertTrue(kurulum.model_indir())
         self.assertEqual(self.hedef.read_bytes(), self.icerik)
-        self.assertEqual(self._kalanlar(), [kurulum.MODEL_ADI])  # .yeni kalmaz
+        self.assertEqual(self._kalanlar(), [kurulum.MODEL_ADI])  # geçici dosya kalmaz
         self.assertEqual(kurulum.MODEL_DURUM["indirilen"], len(self.icerik))
         self.assertEqual(kurulum.MODEL_DURUM["asama"], "bos")
         self.assertTrue(kurulum.model_indirildi())
+        self.assertTrue(kurulum.model_dogrulandi())  # indirip doğrulanan dosya bu süreçte doğrulanmış sayılır
         self.assertEqual(self.sunucu.istekler, ["/download?id=DENEME&export=download&confirm=t"])
 
     def test_ozeti_tutmayan_dosya_reddedilir(self):
@@ -388,6 +392,107 @@ class ModelIndirmeTesti(unittest.TestCase):
             self._bekle()
         self.assertEqual((kurulum.model_durumu()["asama"], kurulum.model_durumu()["eksik"]), ("bos", False))
         self.assertEqual(kurulum.model_indirmeyi_baslat(), (False, "Algılama modeli zaten yerinde."))
+
+    def test_gecici_dosya_bu_surece_ozgu_ve_kurulumunkinden_ayri(self):
+        adlar = []
+        gercek = kurulum.os.replace
+
+        def kaydet(kaynak, hedef):
+            adlar.append(Path(kaynak).name)
+            return gercek(kaynak, hedef)
+
+        with patch.object(kurulum.os, "replace", side_effect=kaydet):
+            self.assertTrue(kurulum.model_indir())
+        self.assertEqual(adlar, [f"{kurulum.MODEL_ADI}.{os.getpid()}.indiriliyor"])
+        self.assertNotEqual(adlar[0], kurulum.MODEL_ADI + ".yeni")  # kurulum dosyası .yeni kullanır
+
+    def _isaretli(self, paket: Path | None = None):
+        paket = paket or self.klasor
+        paket.mkdir(parents=True, exist_ok=True)
+        self.klasor.mkdir(parents=True, exist_ok=True)
+        (paket / kurulum.MODEL_ISARETI).write_text("{}", encoding="ascii")
+
+    def test_acilista_eski_yarim_indirmeler_silinir(self):
+        self._isaretli()
+        eski = self.klasor / f"{kurulum.MODEL_ADI}.4242.indiriliyor"
+        eski.write_bytes(b"yarim")
+        kurulum_yenisi = self.klasor / f"{kurulum.MODEL_ADI}.yeni"
+        kurulum_yenisi.write_bytes(b"kurulum")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(kurulum.model_indirmeyi_baslat(), (True, ""))
+            self._bekle()
+        self.assertFalse(eski.exists())
+        self.assertTrue(kurulum_yenisi.exists())  # kurulum dosyasının geçici adına dokunulmaz
+        self.assertEqual(self.hedef.read_bytes(), self.icerik)
+
+    def test_ayni_boyutta_bozuk_model_bulunur_silinir_ve_yeniden_indirilir(self):
+        self._isaretli()
+        bozuk = bytearray(self.icerik)
+        bozuk[12345] ^= 0xFF
+        self.hedef.write_bytes(bytes(bozuk))
+        self.assertTrue(kurulum.model_indirildi())  # boyut tutuyor: eskiden indirme engelleniyordu
+        self.assertTrue(kurulum.model_durumu()["eksik"] is False)  # kaynak koddan boyut yeter; exe'de aşağıda
+        with patch.object(kurulum.yollar, "DONDURULMUS", True):
+            self.assertTrue(kurulum.model_durumu()["eksik"])
+            with redirect_stdout(io.StringIO()) as cikti:
+                self.assertEqual(kurulum.model_indirmeyi_baslat(), (True, ""))
+                self._bekle()
+            self.assertIn("bozuk", cikti.getvalue())
+            self.assertEqual(self.hedef.read_bytes(), self.icerik)
+            self.assertEqual(len(self.sunucu.istekler), 1)
+            self.assertTrue(kurulum.model_dogrulandi())
+            self.assertFalse(kurulum.model_durumu()["eksik"])
+
+    def test_dogru_model_yalnizca_dogrulanir_indirilmez(self):
+        self._isaretli()
+        self.hedef.write_bytes(self.icerik)
+        with patch.object(kurulum.yollar, "DONDURULMUS", True):
+            self.assertFalse(kurulum.model_dogrulandi())
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(kurulum.model_indirmeyi_baslat(), (True, ""))
+                self._bekle()
+            self.assertEqual(self.sunucu.istekler, [])
+            self.assertTrue(kurulum.model_dogrulandi())
+            self.assertEqual(kurulum.model_indirmeyi_baslat(), (False, "Algılama modeli zaten yerinde."))
+            with patch.object(kurulum.hashlib, "file_digest", side_effect=AssertionError("yeniden okundu")):
+                for _ in range(3):  # durum yoklaması dosyayı yeniden okumaz
+                    self.assertFalse(kurulum.model_durumu()["eksik"])
+
+    def test_dogrulanmamis_model_kullanilmaz(self):
+        paket = self.klasor.parent / "paket"
+        self._isaretli(paket)
+        (paket / "goruntu-ab.dll").write_bytes(b"guvenilir")
+        self.hedef.write_bytes(self.icerik)  # doğru içerik, ama bu süreçte doğrulanmadı
+        (self.klasor / "goruntu-ab.dll").write_bytes(b"degistirilmis")
+        (self.klasor / "fazla.dll").write_bytes(b"x")
+        with patch.object(kurulum.yollar, "DONDURULMUS", True), patch.object(kurulum.yollar, "PAKET_MODELLER", paket):
+            adlar = dict(kurulum.motor_modelleri())
+            self.assertEqual(adlar, {kurulum.MODEL_ISARETI: paket / kurulum.MODEL_ISARETI, "goruntu-ab.dll": paket / "goruntu-ab.dll"})
+            self.assertTrue(kurulum.model_durumu()["eksik"])
+            self.assertIsNone(kurulum.dogrulanmis_ozet(self.hedef))
+            self.assertTrue(kurulum.model_dogrula())
+            adlar = dict(kurulum.motor_modelleri())
+            self.assertEqual(adlar[kurulum.MODEL_ADI], self.hedef)
+            self.assertEqual(adlar["goruntu-ab.dll"], paket / "goruntu-ab.dll")
+            self.assertNotIn("fazla.dll", adlar)
+            os.utime(self.hedef, ns=(1, 1))  # doğrulamadan sonra değişti
+            self.assertNotIn(kurulum.MODEL_ADI, dict(kurulum.motor_modelleri()))
+
+    def test_dogrulanmamis_modelle_analiz_baslamaz(self):
+        import uygulama
+
+        paket = self.klasor.parent / "paket"
+        self._isaretli(paket)
+        (paket / kurulum.MODEL_ISARETI).write_text('{"id": "%s"}' % ("ab" * 16), encoding="ascii")
+        (paket / f"goruntu-{'ab' * 16}.dll").write_bytes(b"dll")
+        self.hedef.write_bytes(self.icerik)
+        with patch.object(kurulum.yollar, "DONDURULMUS", True), patch.object(kurulum.yollar, "PAKET_MODELLER", paket):
+            kurulum.MODEL_DURUM.update(asama="dogrulaniyor")
+            self.assertIn("doğrulanıyor", uygulama._model_engeli())
+            self.assertFalse(uygulama._model_var())
+            kurulum.MODEL_DURUM.update(asama="bos")
+            self.assertIn("indirilmedi", uygulama._model_engeli())
+            self.assertEqual(uygulama.model_kilidi()["durum"], "hazirlaniyor")
 
     def _bekle(self):
         for t in threading.enumerate():

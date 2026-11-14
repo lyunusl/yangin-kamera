@@ -6,8 +6,9 @@ Denetlenenler:
   - imza dosya tarihine bağlı değildir: yalnızca tarihi değişen kaynak (exe'nin her açılışta yeniden açtığı dosyalar) kopyalanmaz
   - yalnızca içeriği değişen dosya kopyalanır; kaynakta artık olmayan dosya silinir
   - Studio'nun kullandığı (kilitli) bir dosya değişmediyse sorun çıkmaz; değiştiyse anlaşılır hata verilir
-  - modeller etkin model klasöründen (yollar.MODELLER) alınır; indirilen model gelince imza değişir, .yeni dosyası girmez
-  - yollar.modelleri_hazirla programla gelen paket dosyalarını model klasörüne kopyalar, indirilen modele dokunmaz
+  - kaynak koddan modeller motor/modeller'den alınır; indirilen model gelince imza değişir, yarım indirmeler girmez
+  - exe benzetimi: işaret ve DLL yalnızca programla gelen kopyadan; veri klasöründeki değiştirilmiş ya da fazladan dosyalar
+    motora girmez; model yalnızca bu süreçte SHA-256 ile doğrulanmışsa girer, sonradan değişirse çıkarılır
 """
 import os
 import sys
@@ -40,7 +41,7 @@ for ad, dosyalar in {"yangin_motor": {"__init__.py": b"", "blok.py": b"x = 1\n",
         yol.parent.mkdir(parents=True, exist_ok=True)
         yol.write_bytes(icerik)
 studio.MOTOR_KAYNAK = kaynak
-ASIL_MODELLER, ASIL_MODEL = studio.yollar.MODELLER, studio.yollar.MODEL
+ASIL_MODELLER, ASIL_MODEL, ASIL_PAKET = studio.yollar.MODELLER, studio.yollar.MODEL, studio.yollar.PAKET_MODELLER
 studio.yollar.MODELLER =kaynak / "modeller"  # modeller, programın etkin model klasöründen alınır (aşağıda ayrıca sınanır)
 
 kopyalar: list[str] = []
@@ -121,48 +122,110 @@ if os.name == "nt":
 else:
     print("  atlandı  dosya kilidi sınaması yalnızca Windows'ta çalışır", flush=True)
 
-print("Etkin model klasörü (exe'de veri klasöründeki modeller)")
+print("Kaynak koddan: modeller motor/modeller gibi tek klasörden (yollar.MODELLER)")
 etkin = Path(tempfile.mkdtemp(prefix="yangin_yerlesim_modeller_"))
 (etkin / "community-paket.json").write_bytes(b'{"id": "00"}')
 (etkin / "goruntu-00.dll").write_bytes(os.urandom(3000))
-studio.yollar.MODELLER = etkin
+studio.yollar.MODELLER = studio.yollar.PAKET_MODELLER = etkin
 k = yerlestir()
-denetle("modeller motor kaynağından değil yollar.MODELLER'den alınır",
+denetle("modeller yollar.MODELLER'den alınır",
         k == ["community-paket.json", "goruntu-00.dll"] and sorted(p.name for p in (hedef / "modeller").iterdir()) == ["community-paket.json", "goruntu-00.dll"])
 s2 = (hedef / "modeller.surum").read_text(encoding="ascii")
-(etkin / "yangin-duman-512.onnx.isgm.yeni").write_bytes(os.urandom(5000))  # süren indirme
-denetle("süren indirmenin .yeni dosyası motora girmez, imza değişmez", yerlestir() == [] and (hedef / "modeller.surum").read_text(encoding="ascii") == s2)
-(etkin / "yangin-duman-512.onnx.isgm.yeni").replace(etkin / "yangin-duman-512.onnx.isgm")
+(etkin / "yangin-duman-512.onnx.isgm.1234.indiriliyor").write_bytes(os.urandom(5000))  # süren indirme
+(etkin / "yangin-duman-512.onnx.isgm.yeni").write_bytes(os.urandom(5000))  # kurulum dosyasının yarım indirmesi
+denetle("yarım indirmeler (.indiriliyor, .yeni) motora girmez, imza değişmez",
+        yerlestir() == [] and (hedef / "modeller.surum").read_text(encoding="ascii") == s2)
+(etkin / "yangin-duman-512.onnx.isgm.1234.indiriliyor").replace(etkin / "yangin-duman-512.onnx.isgm")
 s3 = surum()[0]
 denetle("indirilen model gelince imza değişir ve model kopyalanır",
         yerlestir() == ["yangin-duman-512.onnx.isgm"] and (hedef / "modeller.surum").read_text(encoding="ascii") != s2
         and surum()[0] != s3 and (hedef / "modeller/yangin-duman-512.onnx.isgm").is_file())
 
-print("yollar: programla gelen paket dosyaları model klasörüne")
-import yollar  # noqa: E402
+print("Exe (benzetim): paket dosyaları programla gelen kopyadan, veri klasöründen yalnızca doğrulanmış model")
+import hashlib  # noqa: E402
 
-paket = Path(tempfile.mkdtemp(prefix="yangin_paket_"))
-veri_modeller = Path(tempfile.mkdtemp(prefix="yangin_veri_")) / "modeller"
-(paket / "community-paket.json").write_bytes(b'{"id": "11"}')
-(paket / "goruntu-11.dll").write_bytes(os.urandom(4000))
-denetle("eksik dosyalar kopyalanır", yollar.modelleri_hazirla(paket, veri_modeller) == ["community-paket.json", "goruntu-11.dll"])
-(veri_modeller / "yangin-duman-512.onnx.isgm").write_bytes(b"indirilen model")
-denetle("değişmeyen dosyalar yeniden kopyalanmaz", yollar.modelleri_hazirla(paket, veri_modeller) == [])
-dll = bytearray((paket / "goruntu-11.dll").read_bytes())
-dll[100] ^= 0xFF  # aynı boyut, farklı içerik (yeni sürüm)
-(paket / "goruntu-11.dll").write_bytes(bytes(dll))
-denetle("içeriği değişen dosya yenilenir, indirilen modele dokunulmaz",
-        yollar.modelleri_hazirla(paket, veri_modeller) == ["goruntu-11.dll"] and (veri_modeller / "goruntu-11.dll").read_bytes() == dll
-        and (veri_modeller / "yangin-duman-512.onnx.isgm").read_bytes() == b"indirilen model" and not list(veri_modeller.glob("*.yeni")))
+import studio_kurulum  # noqa: E402
+
+guvenilir = Path(tempfile.mkdtemp(prefix="yangin_paket_"))
+veri = Path(tempfile.mkdtemp(prefix="yangin_veri_")) / "modeller"
+veri.mkdir()
+DLL = "goruntu-" + "ab" * 16 + ".dll"
+guvenilir_json, guvenilir_dll = b'{"id": "' + b"ab" * 16 + b'", "fixture": false}', os.urandom(4000)
+(guvenilir / "community-paket.json").write_bytes(guvenilir_json)
+(guvenilir / DLL).write_bytes(guvenilir_dll)
+(guvenilir / "RUST-NOTICES.txt").write_bytes(b"bildirimler")
+model = b"ISGMOD\x01\x00" + bytes.fromhex("ab" * 16) + os.urandom(3000)
+# veri klasörü kullanıcının yazabildiği yerdir: değiştirilmiş işaret ve DLL, fazladan DLL, yarım indirmeler
+(veri / "community-paket.json").write_bytes(b'{"id": "' + b"cd" * 16 + b'", "fixture": false}')
+(veri / DLL).write_bytes(os.urandom(4000))
+(veri / ("goruntu-" + "cd" * 16 + ".dll")).write_bytes(os.urandom(4000))
+(veri / "baska.dll").write_bytes(os.urandom(100))
+(veri / (studio_kurulum.MODEL_ADI + ".99.indiriliyor")).write_bytes(model[:100])
+(veri / (studio_kurulum.MODEL_ADI + ".yeni")).write_bytes(model[:100])
+(veri / studio_kurulum.MODEL_ADI).write_bytes(model)
+studio.yollar.DONDURULMUS = True
+studio.yollar.PAKET_MODELLER, studio.yollar.MODELLER = guvenilir, veri
+studio_kurulum.MODEL_BOYUT, studio_kurulum.MODEL_SHA256 = len(model), hashlib.sha256(model).hexdigest()
+studio_kurulum._DOGRULANAN.update(yol=None, boyut=None, zaman=None)
+
+
+def motordakiler():
+    return {p.name: p.read_bytes() for p in (hedef / "modeller").iterdir()}
+
+
+yerlestir()
+m = motordakiler()
+denetle("doğrulanmamış model motora girmez; paket dosyaları güvenilir kopyadan gelir",
+        m == {"community-paket.json": guvenilir_json, DLL: guvenilir_dll, "RUST-NOTICES.txt": b"bildirimler"})
+denetle("doğrulanmamış modelde panel modeli eksik sayar", studio_kurulum.model_durumu()["eksik"] and not studio_kurulum.model_hazir())
+denetle("tam SHA-256 doğrulaması geçer", studio_kurulum.model_dogrula() and studio_kurulum.model_dogrulandi())
+okunan = []
+gercek_ac = Path.open
+
+
+def sayan_ac(self, *a, **kw):
+    okunan.append(self.name)
+    return gercek_ac(self, *a, **kw)
+
+
+Path.open = sayan_ac
+try:
+    k = yerlestir()
+finally:
+    Path.open = gercek_ac
+m = motordakiler()
+denetle("doğrulanmış model girer; veri klasöründeki değiştirilmiş işaret/DLL, fazladan DLL ve yarım dosyalar girmez",
+        k == [studio_kurulum.MODEL_ADI] and m == {"community-paket.json": guvenilir_json, DLL: guvenilir_dll,
+                                                  "RUST-NOTICES.txt": b"bildirimler", studio_kurulum.MODEL_ADI: model})
+denetle("imza için doğrulanmış model yeniden okunmaz (özeti bilinir)",
+        studio_kurulum.MODEL_ADI not in okunan)
+s4 = surum()[0]
+denetle("değişmeyince yeniden kopya yok", yerlestir() == [] and surum()[0] == s4)
+bozuk = bytearray(model)
+bozuk[-5] ^= 0xFF
+(veri / studio_kurulum.MODEL_ADI).write_bytes(bytes(bozuk))  # doğrulamadan sonra aynı boyutta değişti
+os.utime(veri / studio_kurulum.MODEL_ADI, ns=(1, 1))
+yerlestir()
+denetle("doğrulamadan sonra değişen model kullanılmaz (motordan çıkarılır)",
+        not studio_kurulum.model_dogrulandi() and studio_kurulum.MODEL_ADI not in motordakiler())
+denetle("aynı boyutta bozuk model doğrulamada yakalanır ve silinir",
+        not studio_kurulum.model_dogrula() and not (veri / studio_kurulum.MODEL_ADI).exists())
+studio.yollar.DONDURULMUS = False
+
+print("yollar: model klasörleri")
 import subprocess  # noqa: E402
 
+import yollar  # noqa: E402
+
 betik = ("import sys; sys.frozen = True; import yollar; "
-         "print(yollar.MODELLER == yollar.VERI / 'modeller', yollar.MODEL.parent == yollar.MODELLER)")
-ortam = dict(os.environ, YANGIN_KAMERA_VERI=str(veri_modeller.parent))
+         "print(yollar.MODELLER == yollar.VERI / 'modeller', yollar.MODEL.parent == yollar.MODELLER, "
+         "yollar.PAKET_MODELLER == yollar.MOTOR / 'modeller', hasattr(yollar, 'modelleri_hazirla'))")
+ortam = dict(os.environ, YANGIN_KAMERA_VERI=str(veri.parent))
 cikti = subprocess.run([sys.executable, "-c", betik], cwd=str(kok), env=ortam, capture_output=True, text=True).stdout.split()
-denetle("exe'de model klasörü veri klasöründedir (YANGIN_KAMERA_VERI'ye uyar)", cikti == ["True", "True"])
+denetle("exe'de indirilen model veri klasöründe, paket dosyaları programla gelen klasörde; veri klasörüne paket kopyalanmaz",
+        cikti == ["True", "True", "True", "False"])
 denetle("kaynak koddan çalışırken model klasörü motor/modeller'dir",
-        ASIL_MODELLER == yollar.MOTOR / "modeller" == kok / "motor" / "modeller" and ASIL_MODEL.parent == ASIL_MODELLER)
+        ASIL_MODELLER == ASIL_PAKET == yollar.MOTOR / "modeller" == kok / "motor" / "modeller" and ASIL_MODEL.parent == ASIL_MODELLER)
 
 kalan = [ad for ad, ok in sonuc if not ok]
 print(f"\n{len(sonuc) - len(kalan)}/{len(sonuc)} denetim geçti" + (f" · kalanlar: {kalan}" if kalan else ""))

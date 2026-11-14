@@ -392,9 +392,12 @@ MODEL_DRIVE_KIMLIGI = "16zSP5DZjS6Y15EK-BHCCZWY5cHEYfih3"
 MODEL_URL = f"https://drive.usercontent.google.com/download?id={MODEL_DRIVE_KIMLIGI}&export=download&confirm=t"
 MODEL_ISARETI = "community-paket.json"  # korumalı paketin işareti (yangin_motor.community_model.ISARET)
 
-# Panelin göstermesi için (model_indir yazar, model_durumu okur). asama: bos | indiriliyor | hata
+# Panelin göstermesi için (model_indir yazar, model_durumu okur). asama: bos | dogrulaniyor | indiriliyor | hata
 MODEL_DURUM: dict = {"asama": "bos", "indirilen": 0, "toplam": 0, "hata": ""}
 _MODEL_KILIDI = threading.Lock()
+# Bu süreçte SHA-256 ile doğrulanan model dosyası: (yol, boyut, değişme zamanı). Dosya değişirse doğrulama geçersizdir.
+_DOGRULANAN: dict = {"yol": None, "boyut": None, "zaman": None}
+GECICI_UZANTI = ".indiriliyor"  # panelin yarım indirmesi: <ad>.<pid>.indiriliyor (kurulum dosyası kendi .yeni adını kullanır)
 
 
 def model_yolu() -> Path:
@@ -402,27 +405,87 @@ def model_yolu() -> Path:
 
 
 def model_gerekli() -> bool:
-    """Korumalı model paketi mi kullanılıyor (işaret dosyası model klasöründe). Düz modelle indirme gerekmez."""
-    return (yollar.MODELLER / MODEL_ISARETI).is_file()
+    """Korumalı model paketi mi kullanılıyor (işaret dosyası programla gelen paket klasöründe). Düz modelle indirme gerekmez."""
+    return (yollar.PAKET_MODELLER / MODEL_ISARETI).is_file()
 
 
 def model_indirildi() -> bool:
-    """Model dosyası yerinde ve boyutu doğru mu. Tam SHA-256 denetimi yalnızca indirmenin sonunda yapılır."""
+    """Model dosyası yerinde ve boyutu doğru mu (yalnızca boyut; tam doğrulama model_dogrulandi)."""
     try:
         return model_yolu().stat().st_size == MODEL_BOYUT
     except OSError:
         return False
 
 
+def _dogrulandi_isaretle(yol: Path) -> None:
+    s = yol.stat()
+    _DOGRULANAN.update(yol=str(yol), boyut=s.st_size, zaman=s.st_mtime_ns)
+
+
+def model_dogrulandi() -> bool:
+    """Model dosyası bu süreçte SHA-256 ile doğrulandı mı ve o andan beri değişmedi mi (dosya yeniden okunmaz)."""
+    yol = model_yolu()
+    try:
+        s = yol.stat()
+    except OSError:
+        return False
+    return (_DOGRULANAN["yol"] == str(yol) and _DOGRULANAN["boyut"] == s.st_size == MODEL_BOYUT
+            and _DOGRULANAN["zaman"] == s.st_mtime_ns)
+
+
+def model_hazir() -> bool:
+    """Model kullanılabilir mi. Exe'de veri klasöründeki dosya yalnızca bu süreçte doğrulanmışsa kullanılır; kaynak koddan
+    çalışırken (motor/modeller) boyut yeter."""
+    return model_dogrulandi() if yollar.DONDURULMUS else model_indirildi()
+
+
 def model_durumu() -> dict:
-    return {**MODEL_DURUM, "eksik": model_gerekli() and not model_indirildi(), "boyut": MODEL_BOYUT}
+    return {**MODEL_DURUM, "eksik": model_gerekli() and not model_hazir(), "boyut": MODEL_BOYUT}
+
+
+def motor_modelleri() -> list[tuple[str, Path]]:
+    """Studio'nun motor klasörüne giden model dosyaları: [(ad, kaynak yol)].
+    Kaynak koddan: motor/modeller'deki dosyalar. Exe: paket dosyaları (işaret, DLL, bildirimler) yalnızca programla gelen
+    güvenilir kopyadan (yollar.PAKET_MODELLER); veri klasöründen yalnızca bu süreçte doğrulanmış model dosyası."""
+    def dosyalar(klasor: Path) -> list[Path]:
+        if not klasor.is_dir():
+            return []
+        return sorted(p for p in klasor.iterdir() if p.is_file() and not p.name.endswith((".yeni", GECICI_UZANTI)))
+
+    if not yollar.DONDURULMUS:
+        return [(p.name, p) for p in dosyalar(yollar.MODELLER)]
+    out = [(p.name, p) for p in dosyalar(yollar.PAKET_MODELLER) if p.name != MODEL_ADI]
+    if model_gerekli() and model_dogrulandi():
+        out.append((MODEL_ADI, model_yolu()))
+    return out
+
+
+def dogrulanmis_ozet(yol: Path) -> bytes | None:
+    """Yol bu süreçte doğrulanmış model dosyasıysa SHA-256 özeti (dosya yeniden okunmaz); değilse None."""
+    if Path(yol) == model_yolu() and model_dogrulandi():
+        return bytes.fromhex(MODEL_SHA256)
+    return None
+
+
+def _gecici_yol() -> Path:
+    return yollar.MODELLER / f"{MODEL_ADI}.{os.getpid()}{GECICI_UZANTI}"
+
+
+def _eski_gecicileri_sil() -> None:
+    """Önceki açılışlardan kalan yarım indirmeleri siler (indirme sürerken çağrılmaz: _MODEL_KILIDI ile korunur)."""
+    for p in yollar.MODELLER.glob(f"{MODEL_ADI}.*{GECICI_UZANTI}") if yollar.MODELLER.is_dir() else []:
+        try:
+            p.unlink()
+        except OSError:
+            pass
 
 
 def model_indir(dur: threading.Event | None = None) -> bool:
-    """Algılama modelini `<MODELLER>/<ad>.yeni` dosyasına indirir, boyutunu ve SHA-256 özetini doğrular, sonra yerine
-    koyar. Yarım ya da doğrulanmamış dosya hiçbir zaman asıl adla kalmaz. Durdurulursa False; hata: SystemExit."""
+    """Algılama modelini bu indirmeye özgü geçici dosyaya (<ad>.<pid>.indiriliyor) indirir, boyutunu ve SHA-256 özetini
+    doğrular, sonra yerine koyar ve doğrulanmış sayar. Yarım ya da doğrulanmamış dosya hiçbir zaman asıl adla kalmaz.
+    Durdurulursa False; hata: SystemExit."""
     hedef = model_yolu()
-    gecici = hedef.with_name(hedef.name + ".yeni")
+    gecici = _gecici_yol()
     bozuk = ("İndirilen dosya algılama modeli değil ya da eksik (boyut veya SHA-256 tutmuyor). Google Drive dosya yerine "
              "bir uyarı sayfası vermiş olabilir; biraz sonra yeniden deneyin.")
     MODEL_DURUM.update(asama="indiriliyor", indirilen=0, toplam=MODEL_BOYUT, hata="")
@@ -447,6 +510,7 @@ def model_indir(dur: threading.Event | None = None) -> bool:
         if MODEL_DURUM["indirilen"] != MODEL_BOYUT or ozet.hexdigest() != MODEL_SHA256:
             raise SystemExit(bozuk)
         os.replace(gecici, hedef)
+        _dogrulandi_isaretle(hedef)
         MODEL_DURUM.update(asama="bos")
         return True
     except urllib.error.URLError as exc:
@@ -463,9 +527,40 @@ def model_indir(dur: threading.Event | None = None) -> bool:
             pass
 
 
-def _model_indir_arkada() -> None:
-    print(f"Algılama modeli indiriliyor (yaklaşık {MODEL_BOYUT // 1_000_000} MB).", flush=True)
+def model_dogrula() -> bool:
+    """Yerindeki model dosyasının tam SHA-256 özetini bir kez hesaplar. Tutarsa doğrulanmış sayılır; tutmazsa dosya
+    silinir (yeniden indirilsin). Dönüş: doğrulandı mı."""
+    yol = model_yolu()
     try:
+        once = yol.stat()
+        if once.st_size != MODEL_BOYUT:
+            return False
+        with yol.open("rb") as f:
+            ozet = hashlib.file_digest(f, "sha256").hexdigest()
+        sonra = yol.stat()
+    except OSError:
+        return False
+    if ozet == MODEL_SHA256 and (once.st_size, once.st_mtime_ns) == (sonra.st_size, sonra.st_mtime_ns):
+        _DOGRULANAN.update(yol=str(yol), boyut=sonra.st_size, zaman=sonra.st_mtime_ns)
+        return True
+    print("Algılama modeli dosyası bozuk (SHA-256 tutmuyor); silinip yeniden indirilecek.", flush=True)
+    try:
+        yol.unlink()
+    except OSError:
+        pass
+    return False
+
+
+def _model_hazirla_arkada() -> None:
+    """Açılışta (ya da Yeniden dene ile): yarım indirmeleri temizler, yerindeki dosyayı doğrular, olmazsa indirir."""
+    try:
+        _eski_gecicileri_sil()
+        if model_indirildi():
+            MODEL_DURUM.update(asama="dogrulaniyor", indirilen=0, toplam=0, hata="")
+            if model_dogrula():
+                MODEL_DURUM.update(asama="bos")
+                return
+        print(f"Algılama modeli indiriliyor (yaklaşık {MODEL_BOYUT // 1_000_000} MB).", flush=True)
         model_indir()
         print("Algılama modeli indirildi ve doğrulandı.", flush=True)
     except SystemExit as e:
@@ -477,12 +572,14 @@ def _model_indir_arkada() -> None:
 
 
 def model_indirmeyi_baslat() -> tuple[bool, str]:
-    """Model eksikse indirmeyi arka planda başlatır (panelin diğer işlerini bekletmez). Dönüş: (başladı ya da sürüyor, mesaj)."""
+    """Model doğrulanmamışsa arka planda doğrular, gerekirse indirir (panelin diğer işlerini bekletmez).
+    Dönüş: (başladı ya da sürüyor, mesaj)."""
     with _MODEL_KILIDI:
-        if MODEL_DURUM["asama"] == "indiriliyor":
-            return True, "Algılama modeli zaten indiriliyor."
-        if not model_gerekli() or model_indirildi():
+        if MODEL_DURUM["asama"] in ("dogrulaniyor", "indiriliyor"):
+            return True, "Algılama modeli zaten hazırlanıyor."
+        if not model_gerekli() or model_hazir():
             return False, "Algılama modeli zaten yerinde."
-        MODEL_DURUM.update(asama="indiriliyor", indirilen=0, toplam=MODEL_BOYUT, hata="")
-        threading.Thread(target=_model_indir_arkada, name="model-indirme", daemon=True).start()
+        MODEL_DURUM.update(asama="dogrulaniyor" if model_indirildi() else "indiriliyor", indirilen=0,
+                           toplam=0 if model_indirildi() else MODEL_BOYUT, hata="")
+        threading.Thread(target=_model_hazirla_arkada, name="model-indirme", daemon=True).start()
     return True, ""

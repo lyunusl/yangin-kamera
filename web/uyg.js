@@ -337,6 +337,7 @@ function modelIndirme(d) {
   // Algılama modeli kurulumda indirilemediyse panel indirir: ilerleme, hata ve "Yeniden dene".
   const m = d?.model_indirme;
   if (!m?.eksik) return '';
+  if (m.asama === 'dogrulaniyor') return '<b>Algılama modeli hazırlanıyor…</b> Dosya doğrulanıyor; birkaç saniye sürer.';
   if (m.asama === 'indiriliyor') {
     const yuzde = m.toplam ? Math.round(100 * m.indirilen / m.toplam) : 0;
     return `<b>Algılama modeli indiriliyor… %${yuzde}</b> ${shMb(m.indirilen)} / ${shMb(m.toplam)} MB. İndirme bitince analiz başlatılabilir.<div class="sh-cubuk"><i style="width:${yuzde}%"></i></div>`;
