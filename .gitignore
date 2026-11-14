@@ -27,8 +27,8 @@ motor/modeller/
 *.lic
 *.pmod
 
-# Yerel model paketi
-kurulum/community-modeller/
+# Korumalı model paketinin şifreli model dosyası (210 MB; sürüm dosyası olarak yayımlanır)
+*.isgm
 
 # Veritabanları ve arşivler
 *.db

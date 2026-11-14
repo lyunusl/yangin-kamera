@@ -4,7 +4,13 @@ Yangın Kamera, güvenlik kameralarının ve video kayıtlarının görüntüsü
 
 Kamerayla çalışan bir **erken uyarı yardımcısıdır; onaylı yangın algılama ve ihbar sisteminin yerini tutmaz.** Duman dedektörünüzü, yangın ihbar sisteminizi ve söndürme sisteminizi olduğu gibi kullanmaya devam edin.
 
-<!-- TODO: Windows kurulum dosyasının indirme bağlantısı (sürüm yayımlanınca). -->
+<p align="center">
+  <a href="https://github.com/lyunusl/yangin-kamera/releases/latest/download/YanginKamera-Kurulum-0.1.0.exe">
+    <img src="https://img.shields.io/badge/Windows%20i%C3%A7in%20indir-Yang%C4%B1n%20Kamera-C62828?style=for-the-badge&logo=windows&logoColor=white" alt="Windows için Yangın Kamera'yı indir" height="56">
+  </a>
+  <br>
+  <sub>Windows 10/11 (64 bit) · <a href="https://github.com/lyunusl/yangin-kamera/releases/latest">Sürüm notları</a></sub>
+</p>
 
 <!-- TODO ekran görüntüsü: Kontrol Odası (kamera karoları ve açık uyarılar). -->
 
@@ -45,7 +51,7 @@ Programda dört kısa örnek video ve hazır kamera ayarları bulunur. Önce **A
 
 ## Kurulum
 
-Kurulum dosyasını (`YanginKamera-Kurulum-0.1.0.exe`) çalıştırın. Kurulum adım adım ilerler:
+Yukarıdaki **Windows için indir** düğmesiyle kurulum dosyasını indirip çalıştırın. Kurulum adım adım ilerler:
 
 1. **Yangın Kamera** bu kullanıcı için kurulur (yönetici izni gerekmez).
 2. **AugeLab Studio** kurulu değilse resmî kurulum dosyası indirilir, doğrulanır ve sessizce kurulur. Visual C++ bileşeni eksikse Microsoft'tan kurulur; Windows izin sorabilir.
@@ -81,10 +87,13 @@ Python 3.12 ve Windows x64 üzerinde, proje klasöründe ortamı hazırlayın.
 py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 .venv\Scripts\python -m pip install --target motor\deps --no-deps onnxruntime==1.31.1
+New-Item -ItemType Directory -Force motor\modeller | Out-Null
+Invoke-WebRequest https://github.com/lyunusl/yangin-kamera/releases/latest/download/yangin-duman-512.onnx.isgm -OutFile kurulum\community-modeller\yangin-duman-512.onnx.isgm
+Copy-Item kurulum\community-modeller\* motor\modeller\
 .venv\Scripts\python uygulama.py
 ```
 
-Panel `http://127.0.0.1:8790` adresinde açılır. AugeLab Studio kurulu ve lisanslı olmalıdır; panel Studio'yu açmaz, her kamera için `python -m studio run` ile arka planda çalıştırır. Model dosyası depoda tutulmaz; `motor\modeller` klasörüne düz model (`yangin-duman-512.onnx`) ya da korumalı paketin dosyaları (`kurulum\community-modeller\*`) konur. Panel modeli hiç yüklemez; model yalnızca Studio'nun içinde açılır.
+Panel `http://127.0.0.1:8790` adresinde açılır. AugeLab Studio kurulu ve lisanslı olmalıdır; panel Studio'yu açmaz, her kamera için `python -m studio run` ile arka planda çalıştırır. Korumalı model paketi `kurulum\community-modeller` klasöründedir; şifreli model dosyası (`yangin-duman-512.onnx.isgm`, 210 MB) GitHub'ın dosya sınırını aştığı için depoda değil, sürüm dosyaları arasındadır ve yukarıdaki komutla indirilir. Panel modeli hiç yüklemez; model yalnızca Studio'nun içinde, etkin lisansla açılır.
 
 Çalıştırılan hazır sahne (`kurulum\sahne\yangin-kamera.pmod`) depoda yoktur, çünkü Studio sahne dosyalarını şifreli kaydeder ve kaydetme yalnızca Studio penceresinden yapılır. Bir kez üretilir:
 

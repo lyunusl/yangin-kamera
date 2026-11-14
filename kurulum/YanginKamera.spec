@@ -62,6 +62,8 @@ a = Analysis(
     ),
     excludes=["torch", "tensorflow", "matplotlib", "pytest"],
 )
+# Kaynak ağacındaki derleme önbelleği (__pycache__) pakete girmez: içinde derleyen bilgisayarın dosya yolları kalır.
+a.datas = [(ad, yol, tur) for ad, yol, tur in a.datas if "__pycache__" not in ad.replace("\\", "/").split("/")]
 if kip == "community":
     # ONNX Runtime'ın örnek grafikleri Community kurulumunda kullanılmaz.
     a.datas = [(ad, yol, tur) for ad, yol, tur in a.datas if not ad.lower().endswith(".onnx")]
