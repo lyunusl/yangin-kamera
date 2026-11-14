@@ -1,0 +1,7 @@
+# Sınama betikleri için (egitim/dene_cikis.py): yerel Modbus, MQTT ve e-posta sunucuları.
+# Program bunlar olmadan çalışır.
+-r requirements.txt
+pymodbus==3.16.2
+amqtt==0.12.1
+aiosmtpd==1.4.6
+# Model dönüştürme betiği (egitim/darknet_onnx.py) ayrıca torch ve onnx gerektirir; burada kurulmaz.
