@@ -1,0 +1,27 @@
+{
+ "ad": "Açık saha · Palet",
+ "kod": "acik",
+ "kamera": {
+  "tur": "dosya",
+  "yol": "videolar/acik.mp4"
+ },
+ "hassasiyet": "orta",
+ "bolgeler": [],
+ "kurallar": [
+  {
+   "kod": "alev"
+  },
+  {
+   "kod": "alev_duman"
+  },
+  {
+   "kod": "alev_buyuyor"
+  },
+  {
+   "kod": "duman"
+  },
+  {
+   "kod": "duman_yayiliyor"
+  }
+ ]
+}

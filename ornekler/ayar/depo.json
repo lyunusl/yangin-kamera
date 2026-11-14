@@ -1,0 +1,27 @@
+{
+ "ad": "Depo · Koridor",
+ "kod": "depo",
+ "kamera": {
+  "tur": "dosya",
+  "yol": "videolar/depo.mp4"
+ },
+ "hassasiyet": "orta",
+ "bolgeler": [],
+ "kurallar": [
+  {
+   "kod": "alev"
+  },
+  {
+   "kod": "alev_duman"
+  },
+  {
+   "kod": "alev_buyuyor"
+  },
+  {
+   "kod": "duman"
+  },
+  {
+   "kod": "duman_yayiliyor"
+  }
+ ]
+}
