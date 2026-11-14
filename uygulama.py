@@ -292,6 +292,9 @@ def is_studio_dene(is_: Is) -> dict:
     lisansı burada doğrulanır). Sonuç saklanır; sonraki açılışlarda yeniden yapılmaz."""
     import studio
 
+    engel = _model_indirme_engeli()  # deneme modeli açar: model yokken denenirse sonuç yanlışlıkla "hazır değil" kalırdı
+    if engel:
+        raise SystemExit(engel)
     print("Lisans kontrol ediliyor…", flush=True)
     try:
         studio.dene()
@@ -540,13 +543,30 @@ def model_kilidi() -> dict:
     """Model paketinin durumu. Panel modeli açmaz: korumalı paket yalnızca AugeLab Studio'nun içinde, etkin lisansla açılır."""
     import kurallar
 
-    return kurallar.model_kilidi(str(yollar.MOTOR / "modeller"))
+    return kurallar.model_kilidi(str(yollar.MODELLER))
+
+
+def _model_indirme_engeli() -> str | None:
+    """Korumalı paketin model dosyası henüz indirilmediyse nedeni (indiriliyor ya da indirilmesi gerekiyor)."""
+    import studio_kurulum
+
+    d = studio_kurulum.model_durumu()
+    if not d["eksik"]:
+        return None
+    if d["asama"] == "indiriliyor":
+        yuzde = round(100 * d["indirilen"] / d["toplam"]) if d["toplam"] else 0
+        return f"Algılama modeli indiriliyor (%{yuzde}). İndirme bitince analizi yeniden başlatın."
+    return ("Algılama modeli henüz indirilmedi (yaklaşık 210 MB). Sayfanın üstündeki “Yeniden dene” düğmesiyle indirin; "
+            "indirme bitince analizi başlatın.")
 
 
 def _model_engeli() -> str | None:
     """Analiz başlatılamıyorsa nedeni (model dosyası yok ya da paket bozuk); başlatılabiliyorsa None."""
     import kurallar
 
+    indirme = _model_indirme_engeli()
+    if indirme:
+        return indirme
     kilit = model_kilidi()
     if kilit["sifreli"] and kilit["durum"] != "studio_kosusunda_dogrulanir":
         return kilit.get("mesaj") or "Model paketi açılamıyor."
@@ -575,6 +595,7 @@ def durum() -> dict:
         "is": AKTIF.ozet() if AKTIF else None, "studio": studio_durumu(), "son_kritik": rapor.son_kritik(),
         "studio_kurulu": studio_kurulum.kurulu_studio() is not None,
         "studio_kurulum": studio_kurulum.durum(), "hesap_url": studio_kurulum.HESAP_URL,
+        "model_indirme": studio_kurulum.model_durumu(),
     }
 
 
@@ -610,7 +631,7 @@ def katalog() -> dict:
     import kamera
     import kurallar
 
-    eksik = kurallar.eksik_modeller(str(yollar.MOTOR / "modeller"))  # model dosyası yerinde değilse kurallar panelde işaretlenir
+    eksik = kurallar.eksik_modeller(str(yollar.MODELLER))  # model dosyası yerinde değilse kurallar panelde işaretlenir
     return {
         "kurallar": [{**k, "model_eksik": eksik[k["kod"]]} if k["kod"] in eksik else k for k in kurallar.KURALLAR],
         "kategoriler": kurallar.KATEGORILER, "bolge_turleri": kurallar.BOLGE_TURLERI,
@@ -938,6 +959,10 @@ class Istek(BaseHTTPRequestHandler):
             ok, m = is_baslat("studio-dene", "AugeLab Studio lisans kontrolü", is_studio_dene)
         elif yol == "/api/studio/dene":
             ok, m = is_baslat("studio-dene", "AugeLab Studio lisans kontrolü", is_studio_dene)
+        elif yol == "/api/model/indir":  # arka planda indirilir; panelin işlerini bekletmez (ilerleme /api/durum'da)
+            import studio_kurulum
+
+            ok, m = studio_kurulum.model_indirmeyi_baslat()
         elif yol == "/api/is/ornek":
             ok, m = is_baslat("ornek", "Örnek analiz", is_ornek)
         elif yol in ("/api/is/test", "/api/is/izle", "/api/is/video"):
@@ -1149,6 +1174,10 @@ def main() -> None:
     print(f"Yangın Kamera {yollar.SURUM}")
     if yollar.hazirla():
         print("İlk kurulum: veri klasörü hazırlandı.")
+    if yollar.DONDURULMUS:  # kurulumda indirilemediyse algılama modeli bir kez kendiliğinden indirilir
+        import studio_kurulum
+
+        studio_kurulum.model_indirmeyi_baslat()
     import depo
 
     depo.vt()

@@ -257,6 +257,8 @@ function shCiz() {
   }
   const odak = document.activeElement?.id === 'sh-kod';
   $('#sh-govde').innerHTML = govde; $('#sh-eylem').innerHTML = eylem;
+  const model = modelIndirme(d);  // Studio adımlarından bağımsız: algılama modeli indirmesi
+  $('#sh-model').hidden = !model; $('#sh-model').innerHTML = model;
   if (adim === 2) {
     const girdi = $('#sh-kod');
     girdi.oninput = () => { SH.kod = girdi.value; SH.hata = ''; };
@@ -268,7 +270,7 @@ function shCiz() {
   }
   if (adim === 1) $('#sh-hesap-tamam').onclick = () => $('#sh-hesabim-var').click();
   // Lisans kodu kurulum dosyasında girildiyse Studio bir kez kendiliğinden denenir (pencere açılmaz).
-  if (adim === 2 && d.studio?.lisans_kaydedildi && d.studio?.hazir !== true && !shDeniyor(d) && !SH.otoDeneme && d.is?.durum !== 'calisiyor') {
+  if (adim === 2 && d.studio?.lisans_kaydedildi && d.studio?.hazir !== true && !shDeniyor(d) && !SH.otoDeneme && d.is?.durum !== 'calisiyor' && !d.model_indirme?.eksik) {
     SH.otoDeneme = true;
     api('/api/studio/dene', {}).then(durumAl).catch(x => { SH.hata = x.message; shCiz(); });
   }
@@ -312,7 +314,8 @@ $('#sihirbaz').addEventListener('cancel', () => { SH.kapatildi = true; clearInte
 let otoDenemeYapildi = false;
 function studioOtoDene(d) {
   // Studio kurulu ama henüz denenmemişse (ör. lisans kodu kurulum dosyasında girildi) deneme bir kez kendiliğinden başlar.
-  if (otoDenemeYapildi || !d?.studio_kurulu || d?.studio?.kurulu === false || d?.studio?.hazir != null || d?.is?.durum === 'calisiyor') return;
+  // Deneme modeli açar: algılama modeli indirilene kadar beklenir.
+  if (otoDenemeYapildi || !d?.studio_kurulu || d?.studio?.kurulu === false || d?.studio?.hazir != null || d?.is?.durum === 'calisiyor' || d?.model_indirme?.eksik) return;
   otoDenemeYapildi = true;
   api('/api/studio/dene', {}).then(durumAl).catch(() => { /* iş çalışıyor olabilir; sihirbazdan yeniden denenir */ });
 }
@@ -330,10 +333,27 @@ function studioUyarisi() {
   return '<div data-studio-kurulum class="uyari-seridi"><b>' + baslik + '</b> ' + ek
     + '<button class="dug kucuk ana" data-is="sihirbaz-ac">Kurulum sihirbazı</button></div>';
 }
+function modelIndirme(d) {
+  // Algılama modeli kurulumda indirilemediyse panel indirir: ilerleme, hata ve "Yeniden dene".
+  const m = d?.model_indirme;
+  if (!m?.eksik) return '';
+  if (m.asama === 'indiriliyor') {
+    const yuzde = m.toplam ? Math.round(100 * m.indirilen / m.toplam) : 0;
+    return `<b>Algılama modeli indiriliyor… %${yuzde}</b> ${shMb(m.indirilen)} / ${shMb(m.toplam)} MB. İndirme bitince analiz başlatılabilir.<div class="sh-cubuk"><i style="width:${yuzde}%"></i></div>`;
+  }
+  const dugme = `<button class="dug kucuk ana" data-is="model-indir">${m.asama === 'hata' ? 'Yeniden dene' : 'İndir'}</button>`;
+  if (m.asama === 'hata') return `<b>Algılama modeli indirilemedi.</b> ${h(m.hata)} ${dugme}`;
+  return `<b>Algılama modeli yok.</b> Alev ve duman aramak için indirilmesi gerekir (yaklaşık ${Math.round((m.boyut || 0) / 1e6)} MB). ${dugme}`;
+}
+function modelIndirmeSeridi() {
+  const m = modelIndirme(S.durum);
+  return m ? `<div data-model-indirme class="uyari-seridi">${m}</div>` : '<div data-model-indirme hidden></div>';
+}
 function modelUyarisi() {
   const d = S.durum, k = d?.model_kilidi;
   let model = '';
-  if (k?.sifreli && k.durum !== 'studio_kosusunda_dogrulanir') model = '<div class="uyari-seridi"><b>Model paketi</b> ' + h(k.mesaj || 'Model paketi açılamıyor.') + '</div>';
+  if (d?.model_indirme?.eksik) model = modelIndirmeSeridi();
+  else if (k?.sifreli && k.durum !== 'studio_kosusunda_dogrulanir') model ='<div class="uyari-seridi"><b>Model paketi</b> ' + h(k.mesaj || 'Model paketi açılamıyor.') + '</div>';
   else if (d && !d.model) model = '<div class="uyari-seridi"><b>Model dosyası yok.</b> Alev ve duman aranamaz; programı yeniden kurun.</div>';
   return studioUyarisi() + model;
 }
@@ -717,6 +737,7 @@ const IS = {
     await durumAl();
     await ciz();
   },
+  'model-indir': async () => { await api('/api/model/indir', {}); await durumAl(); shCiz(); },
   'sihirbaz-ac': () => sihirbazAc(),
   'sihirbaz-kapat': () => sihirbazKapat(),
   'hesap-ac': () => {
@@ -881,10 +902,16 @@ function durumAl() {
 }
 const acikImza = () => (S.durum?.kameralar || []).map(k => `${k.kod}:${k.acik}:${k.suruyor}`).join(',');
 async function durumuYenile() {
+  const modelEksikti = S.durum?.model_indirme?.eksik;
   S.durum = await api('/api/durum');
   rayCiz();
   studioOtoDene(S.durum);
   document.querySelectorAll('[data-studio-kurulum]').forEach(e => { e.outerHTML = studioUyarisi(); });
+  document.querySelectorAll('[data-model-indirme]').forEach(e => { e.outerHTML = modelIndirmeSeridi(); });
+  if (modelEksikti && !S.durum.model_indirme?.eksik) {  // model indirildi: kurallar artık "model yok" diye işaretlenmez
+    S.katalog = await api('/api/katalog');
+    bildir('Algılama modeli indirildi ve doğrulandı.');
+  }
   sihirbazIzle();
 }
 async function ciz() {

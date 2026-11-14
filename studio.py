@@ -94,7 +94,8 @@ def surum() -> str | None:
 
 
 def _dosyalar(klasor: Path) -> list[Path]:
-    return sorted(p for p in klasor.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    # .yeni: yarım kopya ya da süren model indirmesi; motora girmez
+    return sorted(p for p in klasor.rglob("*") if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".yeni")
 
 
 def _dosya_ozeti(p: Path) -> bytes:
@@ -153,13 +154,14 @@ def _esitle(kaynak: Path, hedef: Path) -> int:
 
 
 def motoru_yerlestir(hedef: Path) -> Path:
-    """Motoru (yangin_motor, modeller, deps) Studio'nun özel blok klasörünün yanına kopyalar; değişmediyse dokunmaz."""
+    """Motoru (yangin_motor, modeller, deps) Studio'nun özel blok klasörünün yanına kopyalar; değişmediyse dokunmaz.
+    Modeller, programın kullandığı model klasöründen (yollar.MODELLER; exe'de indirilen model de oradadır) alınır."""
     if not (MOTOR_KAYNAK / "yangin_motor").is_dir():
         raise StudioHatasi(f"Motor kaynağı bulunamadı: {MOTOR_KAYNAK}")
     hedef.mkdir(parents=True, exist_ok=True)
     imzalar = []
     for ad in ("yangin_motor", "modeller", "deps"):
-        kaynak = MOTOR_KAYNAK / ad
+        kaynak = yollar.MODELLER if ad == "modeller" else MOTOR_KAYNAK / ad
         if not kaynak.is_dir():
             continue
         imza = _parmak_izi(kaynak)

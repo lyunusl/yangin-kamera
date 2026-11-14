@@ -6,6 +6,8 @@ Denetlenenler:
   - imza dosya tarihine bağlı değildir: yalnızca tarihi değişen kaynak (exe'nin her açılışta yeniden açtığı dosyalar) kopyalanmaz
   - yalnızca içeriği değişen dosya kopyalanır; kaynakta artık olmayan dosya silinir
   - Studio'nun kullandığı (kilitli) bir dosya değişmediyse sorun çıkmaz; değiştiyse anlaşılır hata verilir
+  - modeller etkin model klasöründen (yollar.MODELLER) alınır; indirilen model gelince imza değişir, .yeni dosyası girmez
+  - yollar.modelleri_hazirla programla gelen paket dosyalarını model klasörüne kopyalar, indirilen modele dokunmaz
 """
 import os
 import sys
@@ -38,6 +40,8 @@ for ad, dosyalar in {"yangin_motor": {"__init__.py": b"", "blok.py": b"x = 1\n",
         yol.parent.mkdir(parents=True, exist_ok=True)
         yol.write_bytes(icerik)
 studio.MOTOR_KAYNAK = kaynak
+ASIL_MODELLER, ASIL_MODEL = studio.yollar.MODELLER, studio.yollar.MODEL
+studio.yollar.MODELLER =kaynak / "modeller"  # modeller, programın etkin model klasöründen alınır (aşağıda ayrıca sınanır)
 
 kopyalar: list[str] = []
 gercek_kopya = studio.shutil.copyfile
@@ -116,6 +120,49 @@ if os.name == "nt":
     denetle("kilit kalkınca aynı yerleştirme tamamlanır", yerlestir() == ["kitaplik.pyd"] and not list(hedef.rglob("*.yeni")))
 else:
     print("  atlandı  dosya kilidi sınaması yalnızca Windows'ta çalışır", flush=True)
+
+print("Etkin model klasörü (exe'de veri klasöründeki modeller)")
+etkin = Path(tempfile.mkdtemp(prefix="yangin_yerlesim_modeller_"))
+(etkin / "community-paket.json").write_bytes(b'{"id": "00"}')
+(etkin / "goruntu-00.dll").write_bytes(os.urandom(3000))
+studio.yollar.MODELLER = etkin
+k = yerlestir()
+denetle("modeller motor kaynağından değil yollar.MODELLER'den alınır",
+        k == ["community-paket.json", "goruntu-00.dll"] and sorted(p.name for p in (hedef / "modeller").iterdir()) == ["community-paket.json", "goruntu-00.dll"])
+s2 = (hedef / "modeller.surum").read_text(encoding="ascii")
+(etkin / "yangin-duman-512.onnx.isgm.yeni").write_bytes(os.urandom(5000))  # süren indirme
+denetle("süren indirmenin .yeni dosyası motora girmez, imza değişmez", yerlestir() == [] and (hedef / "modeller.surum").read_text(encoding="ascii") == s2)
+(etkin / "yangin-duman-512.onnx.isgm.yeni").replace(etkin / "yangin-duman-512.onnx.isgm")
+s3 = surum()[0]
+denetle("indirilen model gelince imza değişir ve model kopyalanır",
+        yerlestir() == ["yangin-duman-512.onnx.isgm"] and (hedef / "modeller.surum").read_text(encoding="ascii") != s2
+        and surum()[0] != s3 and (hedef / "modeller/yangin-duman-512.onnx.isgm").is_file())
+
+print("yollar: programla gelen paket dosyaları model klasörüne")
+import yollar  # noqa: E402
+
+paket = Path(tempfile.mkdtemp(prefix="yangin_paket_"))
+veri_modeller = Path(tempfile.mkdtemp(prefix="yangin_veri_")) / "modeller"
+(paket / "community-paket.json").write_bytes(b'{"id": "11"}')
+(paket / "goruntu-11.dll").write_bytes(os.urandom(4000))
+denetle("eksik dosyalar kopyalanır", yollar.modelleri_hazirla(paket, veri_modeller) == ["community-paket.json", "goruntu-11.dll"])
+(veri_modeller / "yangin-duman-512.onnx.isgm").write_bytes(b"indirilen model")
+denetle("değişmeyen dosyalar yeniden kopyalanmaz", yollar.modelleri_hazirla(paket, veri_modeller) == [])
+dll = bytearray((paket / "goruntu-11.dll").read_bytes())
+dll[100] ^= 0xFF  # aynı boyut, farklı içerik (yeni sürüm)
+(paket / "goruntu-11.dll").write_bytes(bytes(dll))
+denetle("içeriği değişen dosya yenilenir, indirilen modele dokunulmaz",
+        yollar.modelleri_hazirla(paket, veri_modeller) == ["goruntu-11.dll"] and (veri_modeller / "goruntu-11.dll").read_bytes() == dll
+        and (veri_modeller / "yangin-duman-512.onnx.isgm").read_bytes() == b"indirilen model" and not list(veri_modeller.glob("*.yeni")))
+import subprocess  # noqa: E402
+
+betik = ("import sys; sys.frozen = True; import yollar; "
+         "print(yollar.MODELLER == yollar.VERI / 'modeller', yollar.MODEL.parent == yollar.MODELLER)")
+ortam = dict(os.environ, YANGIN_KAMERA_VERI=str(veri_modeller.parent))
+cikti = subprocess.run([sys.executable, "-c", betik], cwd=str(kok), env=ortam, capture_output=True, text=True).stdout.split()
+denetle("exe'de model klasörü veri klasöründedir (YANGIN_KAMERA_VERI'ye uyar)", cikti == ["True", "True"])
+denetle("kaynak koddan çalışırken model klasörü motor/modeller'dir",
+        ASIL_MODELLER == yollar.MOTOR / "modeller" == kok / "motor" / "modeller" and ASIL_MODEL.parent == ASIL_MODELLER)
 
 kalan = [ad for ad, ok in sonuc if not ok]
 print(f"\n{len(sonuc) - len(kalan)}/{len(sonuc)} denetim geçti" + (f" · kalanlar: {kalan}" if kalan else ""))

@@ -6,11 +6,12 @@ Kurulum dosyası ve panel bunu adım adım gösterir:
 3. Studio'yu kullanıcı klasörüne sessizce kurar; olmazsa resmî kurulum penceresini açar,
 4. kullanıcının AugeLab hesabından aldığı lisans kodunu Studio'nun kendi komutuyla arayüzsüz kaydeder
    (studio verify; kod komut satırına değil ortam değişkenine konur). Kod saklanmaz ve günlüğe yazılmaz.
-Analiz de arayüzsüz yapılır (studio.py)."""
+Analiz de arayüzsüz yapılır (studio.py). Algılama modeli kurulumda indirilmediyse panel onu da buradan indirir (model_indir)."""
 from __future__ import annotations
 
 import contextlib
 import hashlib
+import http.client
 import os
 import re
 import ssl
@@ -204,11 +205,16 @@ def _izinle_calistir(program: Path, parametre: str = "", goster: bool = True) ->
         k32.CloseHandle(bilgi.hProcess)
 
 
+def _tls() -> ssl.SSLContext:
+    tls = ssl.create_default_context()
+    tls.load_verify_locations(cafile=certifi.where())
+    return tls
+
+
 def _indir(url: str, dosya: Path, ne: str, is_, sha256: str | None = None) -> bool:
     """`url`'yi `dosya`ya indirir (TLS, certifi ile doğrulanır). `sha256` verilirse özet tutmalı. Durdurulursa False."""
     gecici = dosya.with_suffix(".part")
-    tls = ssl.create_default_context()
-    tls.load_verify_locations(cafile=certifi.where())
+    tls = _tls()
     DURUM.update(asama="vc" if dosya.name.startswith("vc_") else "indiriliyor", ne=ne, indirilen=0, toplam=0)
     istek = urllib.request.Request(url, headers={"User-Agent": "YanginKamera"})
     try:
@@ -373,3 +379,110 @@ def _studio_penceresini_kapat() -> None:
             return
         time.sleep(1)
         _CALISIYOR["an"] = 0.0
+
+
+# ---------------------------------------------------------------- algılama modeli
+# Korumalı model paketinin büyük dosyası programla gelmez: kurulum dosyası kurulum sırasında Google Drive'dan indirir.
+# İndirme olmadıysa panel ilk açılışta indirir (yollar.MODELLER içine). Drive dosya yerine bir uyarı sayfası
+# verebilir (kota, kaldırılmış dosya): her indirme boyut ve SHA-256 ile doğrulanır. YanginKamera.iss ile aynı olmalı.
+MODEL_ADI = "yangin-duman-512.onnx.isgm"
+MODEL_BOYUT = 209_948_213
+MODEL_SHA256 = "e255740b5e76f453ab3fd48fbbb8d0d05cd5671f69a7f110568c65770745e2b0"
+MODEL_DRIVE_KIMLIGI = "16zSP5DZjS6Y15EK-BHCCZWY5cHEYfih3"
+MODEL_URL = f"https://drive.usercontent.google.com/download?id={MODEL_DRIVE_KIMLIGI}&export=download&confirm=t"
+MODEL_ISARETI = "community-paket.json"  # korumalı paketin işareti (yangin_motor.community_model.ISARET)
+
+# Panelin göstermesi için (model_indir yazar, model_durumu okur). asama: bos | indiriliyor | hata
+MODEL_DURUM: dict = {"asama": "bos", "indirilen": 0, "toplam": 0, "hata": ""}
+_MODEL_KILIDI = threading.Lock()
+
+
+def model_yolu() -> Path:
+    return yollar.MODELLER / MODEL_ADI
+
+
+def model_gerekli() -> bool:
+    """Korumalı model paketi mi kullanılıyor (işaret dosyası model klasöründe). Düz modelle indirme gerekmez."""
+    return (yollar.MODELLER / MODEL_ISARETI).is_file()
+
+
+def model_indirildi() -> bool:
+    """Model dosyası yerinde ve boyutu doğru mu. Tam SHA-256 denetimi yalnızca indirmenin sonunda yapılır."""
+    try:
+        return model_yolu().stat().st_size == MODEL_BOYUT
+    except OSError:
+        return False
+
+
+def model_durumu() -> dict:
+    return {**MODEL_DURUM, "eksik": model_gerekli() and not model_indirildi(), "boyut": MODEL_BOYUT}
+
+
+def model_indir(dur: threading.Event | None = None) -> bool:
+    """Algılama modelini `<MODELLER>/<ad>.yeni` dosyasına indirir, boyutunu ve SHA-256 özetini doğrular, sonra yerine
+    koyar. Yarım ya da doğrulanmamış dosya hiçbir zaman asıl adla kalmaz. Durdurulursa False; hata: SystemExit."""
+    hedef = model_yolu()
+    gecici = hedef.with_name(hedef.name + ".yeni")
+    bozuk = ("İndirilen dosya algılama modeli değil ya da eksik (boyut veya SHA-256 tutmuyor). Google Drive dosya yerine "
+             "bir uyarı sayfası vermiş olabilir; biraz sonra yeniden deneyin.")
+    MODEL_DURUM.update(asama="indiriliyor", indirilen=0, toplam=MODEL_BOYUT, hata="")
+    istek = urllib.request.Request(MODEL_URL, headers={"User-Agent": "YanginKamera"})
+    try:
+        hedef.parent.mkdir(parents=True, exist_ok=True)
+        ozet = hashlib.sha256()
+        with urllib.request.urlopen(istek, timeout=30, context=_tls()) as yanit:
+            uzunluk = int(yanit.headers.get("Content-Length") or 0)
+            if uzunluk and uzunluk != MODEL_BOYUT:
+                raise SystemExit(bozuk)
+            with gecici.open("wb") as cikti:
+                for parca in iter(lambda: yanit.read(256 * 1024), b""):
+                    if dur is not None and dur.is_set():
+                        MODEL_DURUM.update(asama="bos")
+                        return False
+                    MODEL_DURUM["indirilen"] += len(parca)
+                    if MODEL_DURUM["indirilen"] > MODEL_BOYUT:
+                        raise SystemExit(bozuk)
+                    ozet.update(parca)
+                    cikti.write(parca)
+        if MODEL_DURUM["indirilen"] != MODEL_BOYUT or ozet.hexdigest() != MODEL_SHA256:
+            raise SystemExit(bozuk)
+        os.replace(gecici, hedef)
+        MODEL_DURUM.update(asama="bos")
+        return True
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ssl.SSLCertVerificationError):
+            raise SystemExit("Algılama modelinin indirme adresinin TLS sertifikası doğrulanamadı.") from exc
+        raise SystemExit("Algılama modeli indirilemedi: internet bağlantısını kontrol edip yeniden deneyin.") from exc
+    except (OSError, http.client.HTTPException) as exc:  # bağlantı koptu, zaman aşımı ya da diske yazılamadı
+        neden = getattr(exc, "strerror", None) or "bağlantı kesildi"
+        raise SystemExit(f"Algılama modeli indirilemedi ({neden}). Yeniden deneyin.") from exc
+    finally:
+        try:
+            gecici.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _model_indir_arkada() -> None:
+    print(f"Algılama modeli indiriliyor (yaklaşık {MODEL_BOYUT // 1_000_000} MB).", flush=True)
+    try:
+        model_indir()
+        print("Algılama modeli indirildi ve doğrulandı.", flush=True)
+    except SystemExit as e:
+        MODEL_DURUM.update(asama="hata", hata=str(e.code or "Algılama modeli indirilemedi."))
+        print(MODEL_DURUM["hata"], flush=True)
+    except Exception as e:
+        MODEL_DURUM.update(asama="hata", hata=f"Algılama modeli indirilemedi: {e}")
+        print(MODEL_DURUM["hata"], flush=True)
+
+
+def model_indirmeyi_baslat() -> tuple[bool, str]:
+    """Model eksikse indirmeyi arka planda başlatır (panelin diğer işlerini bekletmez). Dönüş: (başladı ya da sürüyor, mesaj)."""
+    with _MODEL_KILIDI:
+        if MODEL_DURUM["asama"] == "indiriliyor":
+            return True, "Algılama modeli zaten indiriliyor."
+        if not model_gerekli() or model_indirildi():
+            return False, "Algılama modeli zaten yerinde."
+        MODEL_DURUM.update(asama="indiriliyor", indirilen=0, toplam=MODEL_BOYUT, hata="")
+        threading.Thread(target=_model_indir_arkada, name="model-indirme", daemon=True).start()
+    return True, ""

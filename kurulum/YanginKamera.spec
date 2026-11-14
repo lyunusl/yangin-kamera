@@ -22,7 +22,7 @@ if (root / "ornekler").is_dir():  # örnek videolar ve ayarları (yoksa program 
     data.append((str(root / "ornekler"), "ornekler"))
 kip = os.environ.get("YANGIN_MODEL_PAKETI", "").strip().lower()
 if kip == "community":
-    # Korumalı paket: model yalnızca AugeLab Studio'nun içinde, etkin lisansla açılır. Düz model exe'ye girmez.
+    # Korumalı paket: model yalnızca AugeLab Studio'nun içinde, etkin lisansla açılır. Düz model de şifreli model de exe'ye girmez.
     paket = Path(os.environ.get("YANGIN_COMMUNITY_MODEL_KLASORU") or root / "kurulum" / "community-modeller")
     isaret = paket / "community-paket.json"
     try:
@@ -43,7 +43,9 @@ if kip == "community":
                     raise ValueError(f"Paket başlığı geçersiz: {m.name}")
     except (OSError, ValueError, TypeError, KeyError) as e:
         raise SystemExit(f"Community model paketi eksik veya geçersiz: {e}") from e
-    data += [(str(m), "motor/modeller") for m in [isaret, dll, *modeller]]
+    # Büyük model dosyası (.isgm) exe'ye girmez: kurulum dosyası onu kurulumda Google Drive'dan indirir (SHA-256 ile
+    # doğrulanır), olmazsa panel ilk açılışta indirir (studio_kurulum.model_indir). Yerel dosya yalnızca denetlenir.
+    data += [(str(m), "motor/modeller") for m in [isaret, dll]]
     data.append((str(bildirimler), "."))
 elif kip == "":
     duz = root / "motor" / "modeller" / MODEL  # geliştirme derlemesi: düz model

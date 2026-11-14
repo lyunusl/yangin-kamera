@@ -5,12 +5,15 @@
 ;
 ; Adım adım kurar ve AugeLab Studio'yu da kurar; Studio penceresi hiç açılmaz:
 ;   1. Yangın Kamera   kullanıcı başına (yönetici izni gerekmez) %LOCALAPPDATA%\Programs\YanginKamera altına
-;   2. AugeLab Studio  yoksa resmî kurucuyu indirir (SHA-256 doğrulanır), Visual C++ çalışma kitaplığı eksikse Microsoft'tan
+;   2. Algılama modeli korumalı model dosyasını (yaklaşık 210 MB) Google Drive'dan indirir, SHA-256 ile doğrular ve
+;                      %LOCALAPPDATA%\YanginKamera\modeller altına koyar (yalnızca community kipinde; dosya yerindeyse atlanır)
+;   3. AugeLab Studio  yoksa resmî kurucuyu indirir (SHA-256 doğrulanır), Visual C++ çalışma kitaplığı eksikse Microsoft'tan
 ;                      indirip imzasını doğrulayarak kurar, Studio'yu sessizce kurar (olmazsa resmî kurulum penceresi)
-;   3. AugeLab hesabı  hesap sayfasını tarayıcıda açar (lisans kodu hesapta görünür)
-;   4. Lisans kodu     kodu Studio'nun kendi komutuyla arayüzsüz kaydeder (python -m studio verify); kod saklanmaz
-; Adım 2-4 atlanabilir: program açılınca paneldeki kurulum sihirbazı aynı adımları gösterir.
-; Kaldırınca program silinir; kullanıcı verisi (%LOCALAPPDATA%\YanginKamera: kameralar, olaylar, klipler) yerinde kalır.
+;   4. AugeLab hesabı  hesap sayfasını tarayıcıda açar (lisans kodu hesapta görünür)
+;   5. Lisans kodu     kodu Studio'nun kendi komutuyla arayüzsüz kaydeder (python -m studio verify); kod saklanmaz
+; Adım 2-5 atlanabilir: program açılınca panel modeli kendisi indirir, kurulum sihirbazı Studio adımlarını gösterir.
+; Kaldırınca program silinir; kullanıcı verisi (%LOCALAPPDATA%\YanginKamera: kameralar, olaylar, klipler, indirilen model)
+; yerinde kalır.
 
 #define Ad "Yangın Kamera"
 #define Surum "0.1.0"
@@ -28,6 +31,17 @@
 #define VcUrl "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 #define HesapUrl "https://account.augelab.com/"
 #define StudioExe "AugeLab AI Studio.exe"
+; Algılama modeli: studio_kurulum.py (MODEL_*) ile aynı olmalı. Drive kimliği tek yerde: ModelDriveKimligi.
+#define ModelAdi "yangin-duman-512.onnx.isgm"
+#define ModelBoyut "209948213"
+#define ModelSha256 "e255740b5e76f453ab3fd48fbbb8d0d05cd5671f69a7f110568c65770745e2b0"
+#define ModelDriveKimligi "16zSP5DZjS6Y15EK-BHCCZWY5cHEYfih3"
+#define ModelUrl "https://drive.usercontent.google.com/download?id=" + ModelDriveKimligi + "&export=download&confirm=t"
+#if Kip == "community"
+  #define ModelGerekli "True"
+#else
+  #define ModelGerekli "False"
+#endif
 
 [Setup]
 AppId={{765C268D-4954-4FD6-BBD4-85DC7A42810D}
@@ -85,6 +99,8 @@ tr.FinishedLabel=Kurulum tamamlandı. {#Ad} açıldığında kameralarınızı e
 
 [Code]
 var
+  ModelSayfa: TOutputMsgWizardPage;
+  ModelIndirmeSayfa: TDownloadWizardPage;
   StudioSayfa: TOutputMsgWizardPage;
   HesapSayfa: TOutputMsgWizardPage;
   LisansSayfa: TInputQueryWizardPage;
@@ -178,6 +194,56 @@ begin
   finally
     IndirmeSayfa.Hide;
   end;
+end;
+
+function ModelKlasoru(): String;
+begin
+  Result := ExpandConstant('{localappdata}\YanginKamera\modeller');
+end;
+
+{ Model dosyası yerinde ve boyutu doğru mu (tam SHA-256 denetimi indirmede yapılır; panel de aynı ölçütü kullanır). }
+function ModelYerinde(): Boolean;
+var
+  Boyut: Integer;
+begin
+  Result := FileSize(ModelKlasoru() + '\{#ModelAdi}', Boyut) and (Boyut = {#ModelBoyut});
+end;
+
+{ Modeli indirir (Inno Setup SHA-256 özetini doğrular; Drive dosya yerine sayfa verirse özet tutmaz) ve model klasörüne
+  önce .yeni adıyla, sonra asıl adıyla koyar. Olmazsa tek bir bilgi kutusu: program ilk açılışta kendisi indirir. }
+procedure ModelIndir();
+var
+  Indirilen, Gecici, Hedef: String;
+  Tamam: Boolean;
+begin
+  Indirilen := ExpandConstant('{tmp}\{#ModelAdi}');
+  Gecici := ModelKlasoru() + '\{#ModelAdi}.yeni';
+  Hedef := ModelKlasoru() + '\{#ModelAdi}';
+  Tamam := False;
+  ModelIndirmeSayfa.Clear;
+  ModelIndirmeSayfa.Add('{#ModelUrl}', '{#ModelAdi}', '{#ModelSha256}');
+  ModelIndirmeSayfa.Show;
+  try
+    try
+      ModelIndirmeSayfa.Download;
+      if ForceDirectories(ModelKlasoru()) then begin
+        DeleteFile(Gecici);
+        if RenameFile(Indirilen, Gecici) or CopyFile(Indirilen, Gecici, False) then begin
+          DeleteFile(Hedef);
+          Tamam := RenameFile(Gecici, Hedef) and ModelYerinde();
+        end;
+      end;
+    except
+      Tamam := False;
+    end;
+  finally
+    ModelIndirmeSayfa.Hide;
+    DeleteFile(Gecici);
+    DeleteFile(Indirilen);
+  end;
+  if not Tamam then
+    MsgBox('Algılama modeli indirilemedi ya da doğrulanamadı. Kuruluma devam edebilirsiniz: ' +
+      '{#Ad} ilk açılışta modeli kendisi indirir (internet bağlantısı gerekir).', mbInformation, MB_OK);
 end;
 
 function StudioKur(): Boolean;
@@ -303,7 +369,13 @@ end;
 procedure InitializeWizard();
 begin
   IndirmeSayfa := CreateDownloadPage('AugeLab Studio', 'Gerekli dosyalar indiriliyor.', nil);
-  StudioSayfa := CreateOutputMsgPage(wpInstalling, 'AugeLab Studio',
+  ModelIndirmeSayfa := CreateDownloadPage('Algılama modeli', 'Algılama modeli (yaklaşık 210 MB) indiriliyor ve doğrulanıyor.', nil);
+  ModelSayfa := CreateOutputMsgPage(wpInstalling, 'Algılama modeli',
+    'Yangın Kamera alev ve dumanı bir yapay zekâ modeliyle algılar.',
+    'Algılama modeli (yaklaşık 210 MB) kurulum dosyasına konmadı. Sonraki''ye basınca Google Drive''dan indirilir, ' +
+    'SHA-256 özetiyle doğrulanır ve bu kullanıcının veri klasörüne konur. İnternet hızına göre birkaç dakika sürebilir.'#13#10#13#10 +
+    'İndirme olmazsa kurulum yine tamamlanır; {#Ad} ilk açılışta modeli kendisi indirir.');
+  StudioSayfa := CreateOutputMsgPage(ModelSayfa.ID, 'AugeLab Studio',
     'Yangın Kamera görüntüleri bu bilgisayardaki AugeLab Studio ile analiz eder.', '');
   HesapSayfa := CreateOutputMsgPage(StudioSayfa.ID, 'AugeLab hesabı',
     'Studio''yu etkinleştiren lisans kodu AugeLab hesabınızda görünür.',
@@ -348,16 +420,32 @@ end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  { Studio kurulamadıysa hesap ve lisans adımları programdaki sihirbaza kalır. }
-  Result := ((PageID = HesapSayfa.ID) or (PageID = LisansSayfa.ID)) and (StudioYeri() = '');
+  { Model yerindeyse (ya da community kipi değilse) model adımı atlanır. Studio kurulamadıysa hesap ve lisans adımları
+    programdaki sihirbaza kalır. }
+  if PageID = ModelSayfa.ID then
+    Result := (not {#ModelGerekli}) or ModelYerinde()
+  else
+    Result := ((PageID = HesapSayfa.ID) or (PageID = LisansSayfa.ID)) and (StudioYeri() = '');
 end;
+
+var
+  SonrakiMesgul: Boolean;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   Kod: String;
 begin
+  { Uzun bir adım (indirme, Visual C++ ya da Studio kurulumu) sürerken düğmeye yeniden basılırsa adım ikinci kez başlamaz. }
+  Result := False;
+  if SonrakiMesgul then exit;
+  SonrakiMesgul := True;
+  try
   Result := True;
-  if (CurPageID = StudioSayfa.ID) and (StudioYeri() = '') then begin
+  if CurPageID = ModelSayfa.ID then begin
+    { Model indirilemese de kurulum sürer (ModelIndir bilgi verir). }
+    if not ModelYerinde() then
+      ModelIndir();
+  end else if (CurPageID = StudioSayfa.ID) and (StudioYeri() = '') then begin
     if not StudioKur() then
       Result := MsgBox('AugeLab Studio kurulmadan devam edilsin mi? Programı açınca paneldeki sihirbazla kurabilirsiniz.',
         mbConfirmation, MB_YESNO) = IDYES;
@@ -373,5 +461,8 @@ begin
       Result := LisansKaydet(Kod);
       if Result then LisansSayfa.Values[0] := '';
     end;
+  end;
+  finally
+    SonrakiMesgul := False;
   end;
 end;

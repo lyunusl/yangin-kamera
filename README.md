@@ -54,13 +54,14 @@ Programda dört kısa örnek video ve hazır kamera ayarları bulunur. Önce **A
 Yukarıdaki **Windows için indir** düğmesiyle kurulum dosyasını indirip çalıştırın. Kurulum adım adım ilerler:
 
 1. **Yangın Kamera** bu kullanıcı için kurulur (yönetici izni gerekmez).
-2. **AugeLab Studio** kurulu değilse resmî kurulum dosyası indirilir, doğrulanır ve sessizce kurulur. Visual C++ bileşeni eksikse Microsoft'tan kurulur; Windows izin sorabilir.
-3. **AugeLab hesabı**: hesabınız yoksa düğmeyle tarayıcıda oluşturun.
-4. **Lisans kodu**: hesabınızdaki lisans kodunu yapıştırın. Kod, Studio penceresi açılmadan Studio'ya kaydedilir; Yangın Kamera onu saklamaz.
+2. **Algılama modeli**: şifreli model dosyası (yaklaşık 210 MB) kurulum sırasında Google Drive'dan indirilir ve SHA-256 özetiyle doğrulanır. İndirme olmazsa kurulum yine tamamlanır; Yangın Kamera ilk açılışta modeli kendisi indirir.
+3. **AugeLab Studio** kurulu değilse resmî kurulum dosyası indirilir, doğrulanır ve sessizce kurulur. Visual C++ bileşeni eksikse Microsoft'tan kurulur; Windows izin sorabilir.
+4. **AugeLab hesabı**: hesabınız yoksa düğmeyle tarayıcıda oluşturun.
+5. **Lisans kodu**: hesabınızdaki lisans kodunu yapıştırın. Kod, Studio penceresi açılmadan Studio'ya kaydedilir; Yangın Kamera onu saklamaz.
 
 Kurulum bitince Yangın Kamera açılır ve panel tarayıcınızda görünür (`http://127.0.0.1:8790`). Studio'nun hazır olduğu kısa bir arka plan denemesiyle doğrulanır. Bir adımı atladıysanız paneldeki kurulum sihirbazı aynı adımları gösterir.
 
-Analiz, arayüzsüz kullanıma izin veren etkin bir AugeLab Studio lisansıyla çalışır. Programla gelen model paketi korumalıdır: yalnızca AugeLab Studio'nun içinde, etkin lisansla açılır. İlk kurulum ve lisans etkinleştirme için internet gerekir.
+Analiz, arayüzsüz kullanıma izin veren etkin bir AugeLab Studio lisansıyla çalışır. Model paketi korumalıdır: yalnızca AugeLab Studio'nun içinde, etkin lisansla açılır. İlk kurulum, model indirme ve lisans etkinleştirme için internet gerekir. İndirilen model kullanıcı verisiyle birlikte `%LOCALAPPDATA%\YanginKamera\modeller` klasöründe durur ve program kaldırılınca silinmez.
 
 ## Kamera ve veri
 
@@ -76,7 +77,7 @@ Analiz bilgisayarınızda yapılır; görüntü internete gönderilmez. Olay kar
 - Analiz işlemcide saniyede yaklaşık **iki kare** yapılır (hızlı bir masaüstünde kare başına yaklaşık 0,25 saniye). Uyarı, alev ya da duman göründükten en erken bir-iki saniye sonra çıkar.
 - Model, alevi bazen sıfır boyutlu kutularla bildirir; bunlar atılır. Böyle karelerde alev sayılmayabilir.
 - Aynı anda bir kamera izlenir. USB kamera desteklenmez.
-- Gerçek IP kamera, ONVIF cihazı ve kayıt cihazıyla uçtan uca test yapılmadı; ONVIF akışı yerel bir test cihazıyla sınandı. Kurulum temiz bir Windows ortamında (Windows Sandbox) iki durumda denendi: AugeLab Studio kurulu değilken ve önceden kuruluyken. İkisinde de lisans kabul edildi, panel açıldı ve dört örnek klip Studio penceresi açılmadan analiz edildi.
+- Gerçek IP kamera, ONVIF cihazı ve kayıt cihazıyla uçtan uca test yapılmadı; ONVIF akışı yerel bir test cihazıyla sınandı. Kurulum temiz bir Windows ortamında (Windows Sandbox), AugeLab Studio kurulu değilken denendi: model Google Drive'dan indirilip doğrulandı, Studio kuruldu ve panel açıldı. Lisans kabulü ve dört örnek klibin Studio penceresi açılmadan analizi, modelin kurulum dosyasının içinde geldiği önceki derlemeyle aynı ortamda (Studio kuruluyken ve değilken) denenmişti; indirilen modelle analiz, Studio'su kurulu bir bilgisayarda yeniden denendi.
 - Bildirim ve kontrol çıkışları ikaz ve entegrasyon içindir. Emniyet durdurması ya da söndürme tetiklemesi olarak kullanılmaz.
 
 ## Kaynak koddan geliştirme
@@ -88,12 +89,12 @@ py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 .venv\Scripts\python -m pip install --target motor\deps --no-deps onnxruntime==1.31.1
 New-Item -ItemType Directory -Force motor\modeller | Out-Null
-Invoke-WebRequest https://github.com/lyunusl/yangin-kamera/releases/latest/download/yangin-duman-512.onnx.isgm -OutFile kurulum\community-modeller\yangin-duman-512.onnx.isgm
+Invoke-WebRequest "https://drive.usercontent.google.com/download?id=16zSP5DZjS6Y15EK-BHCCZWY5cHEYfih3&export=download&confirm=t" -OutFile kurulum\community-modeller\yangin-duman-512.onnx.isgm
 Copy-Item kurulum\community-modeller\* motor\modeller\
 .venv\Scripts\python uygulama.py
 ```
 
-Panel `http://127.0.0.1:8790` adresinde açılır. AugeLab Studio kurulu ve lisanslı olmalıdır; panel Studio'yu açmaz, her kamera için `python -m studio run` ile arka planda çalıştırır. Korumalı model paketi `kurulum\community-modeller` klasöründedir; şifreli model dosyası (`yangin-duman-512.onnx.isgm`, 210 MB) GitHub'ın dosya sınırını aştığı için depoda değil, sürüm dosyaları arasındadır ve yukarıdaki komutla indirilir. Panel modeli hiç yüklemez; model yalnızca Studio'nun içinde, etkin lisansla açılır.
+Panel `http://127.0.0.1:8790` adresinde açılır. AugeLab Studio kurulu ve lisanslı olmalıdır; panel Studio'yu açmaz, her kamera için `python -m studio run` ile arka planda çalıştırır. Korumalı model paketi `kurulum\community-modeller` klasöründedir; şifreli model dosyası (`yangin-duman-512.onnx.isgm`, 210 MB) GitHub'ın dosya sınırını aştığı için depoda değil, Google Drive'dadır ve yukarıdaki komutla indirilir (SHA-256 özeti `studio_kurulum.py` içindeki `MODEL_SHA256` ile aynı olmalıdır). EXE'ye bu dosya konmaz; kurulum dosyası onu kurulumda indirir. Panel modeli hiç yüklemez; model yalnızca Studio'nun içinde, etkin lisansla açılır.
 
 Çalıştırılan hazır sahne (`kurulum\sahne\yangin-kamera.pmod`) depoda yoktur, çünkü Studio sahne dosyalarını şifreli kaydeder ve kaydetme yalnızca Studio penceresinden yapılır. Bir kez üretilir:
 
