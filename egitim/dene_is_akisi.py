@@ -7,6 +7,8 @@ Studio çağrıları sahte işlevlerle değiştirilir; veri klasörü geçicidir
   - sahnenin durduğu doğrulanamazsa ya da kuyruk boşalmazsa iş hatayla biter, açık olay ve yarım klip temizliği yapılmaz
   - kuyruk bekleyicisi, klip dönüştürme içeri alma kilidini tutarken de süresini aşmadan False döner
   - Yangın Kurallar, Bitti=True geldiğinde (motor kurulmamış olsa da) görüntü çıkışını boş bırakır
+  - işini bitirdikten sonra gelen durdurma (bağlantı denemesinin karesi kaydedilmişse) işi "durduruldu" yapmaz
+  - kapanış süren işi durdurup bekler ve ondan sonra yeni iş kabul etmez
 """
 import asyncio
 import os
@@ -208,6 +210,61 @@ print("Yangın Kurallar: Bitti=True")
 kare = np.full((120, 160, 3), 90, np.uint8)
 cikis = blok.kurallar({}, kare, "[]", "dnm#1", 0.0, True)
 denetle("motor kurulmamışken dolu girişle: görüntü çıkışı boş", cikis[0] is None and cikis[1] is False)
+
+print("Geç gelen durdurma")
+uygulama.AKTIF = None
+
+
+def bekle_bitsin(is_):
+    for _ in range(200):
+        if is_.durum != "calisiyor":
+            break
+        time.sleep(0.02)
+    return is_.durum
+
+
+def yine_de_biter(is_):
+    is_.dur.set()  # durdurma, iş bittiğinde gelir (bağlantı denemesinin karesi kaydedilmişti)
+    return {"tamamlandi": True}
+
+
+def zamaninda_durur(is_):
+    is_.dur.set()
+    return {}
+
+
+for islev, beklenen in ((yine_de_biter, "bitti"), (zamaninda_durur, "durduruldu")):
+    uygulama.is_baslat("test", "geç durdurma", islev)
+    denetle(f"{islev.__name__}: iş {beklenen} gösterilir", bekle_bitsin(uygulama.AKTIF) == beklenen)
+
+gercek_test = kamera.test
+for donus, beklenen in ((0, "bitti"), (2, "durduruldu"), (1, "hata")):
+    def sahte_test(ayar, yol, sifre=None, dur=None, donus=donus):
+        dur.set()  # kullanıcı denemeyi durdurdu: kamera.test kare yazılmadan önce gördüyse 2, yazdıktan sonraysa 0 döner
+        return donus
+    kamera.test = sahte_test
+    uygulama.is_baslat("test", "bağlantı denemesi", uygulama.is_test, KOD, None)
+    denetle(f"bağlantı denemesi kamera.test={donus} ve durdurma: {beklenen}", bekle_bitsin(uygulama.AKTIF) == beklenen)
+kamera.test = gercek_test
+
+print("Programın kapanışı")
+uygulama.AKTIF = None
+
+
+def durunca_biter(is_):
+    while not is_.dur.is_set():
+        time.sleep(0.05)
+    time.sleep(0.3)  # durdurmadan sonra işin yapacakları var (sahnesini kapatmak)
+    return {}
+
+
+ok, _ = uygulama.is_baslat("izle", "kapanış denemesi", durunca_biter)
+suren = uygulama.AKTIF
+t0 = time.monotonic()
+uygulama.kapanis_temizligi(10)
+denetle("kapanış süren işi durdurur ve bitmesini bekler", ok and suren.durum == "durduruldu" and 0.25 < time.monotonic() - t0 < 5)
+ok, neden = uygulama.is_baslat("izle", "kapanıştan sonra", durunca_biter)
+denetle("kapanış başladıktan sonra yeni iş kabul edilmez", not ok and "kapanıyor" in neden and uygulama.AKTIF is suren)
 
 kalan = [ad for ad, ok in sonuc if not ok]
 print(f"\n{len(sonuc) - len(kalan)}/{len(sonuc)} denetim geçti" + (f" · kalanlar: {kalan}" if kalan else ""))

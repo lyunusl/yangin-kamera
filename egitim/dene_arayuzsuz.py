@@ -5,7 +5,9 @@
 Sahte Studio, gerçeğinin --json çıktısını taklit eder: lifecycle satırları, --step verilirse sonuç satırıyla çıkış; verilmezse
 (sürekli kip) kendiliğinden bitmez. Denenenler: blok dosyalarının yazılması, deneme koşusu, kameranın ortam değişkenleriyle
 verilmesi (adres komut satırına girmez), durdurma dosyası ve süreç ağacının kapatılması, Studio'nun reddettiği koşunun nedeni,
-panelin modeli hiç yüklememesi ve bağlantı denemesinin Studio'yu çalıştırmaması.
+panelin modeli hiç yüklememesi ve bağlantı denemesinin Studio'yu çalıştırmaması. Ayrıca: stderr'in maskelenip günlüğe yazılması
+(kısa şifre ve tek seferlik yerel adres dahil), koşu başına durdurma dosyası, iş nesnesine bağlama, "EOF" / işaretli çıkış kodu /
+kullanıcı klasörü, bağlantı denemesinin geç durdurması ve yazılamayan kare.
 """
 import asyncio
 import json
@@ -28,7 +30,30 @@ def yaz(**o):
 kayit = os.path.join(os.getcwd(), "sahte-ortam.json")
 with open(kayit, "a", encoding="utf-8") as f:
     f.write(json.dumps({"arg": arg, "kamera": os.environ.get("YANGIN_KAMERA"), "adres": os.environ.get("YANGIN_KAMERA_ADRES"),
-                        "dur": os.environ.get("YANGIN_DUR")}) + "\n")
+                        "dur": os.environ.get("YANGIN_DUR"), "cv_log": os.environ.get("OPENCV_LOG_LEVEL"),
+                        "ff_log": os.environ.get("OPENCV_FFMPEG_LOGLEVEL")}) + "\n")
+def hata(metin):
+    sys.stderr.write(metin + "\n")
+    sys.stderr.flush()
+adres = os.environ.get("YANGIN_KAMERA_ADRES")
+if adres:  # gerçek OpenCV/FFmpeg gibi adresi ve kimlik bilgisini stderr'e yazar
+    from urllib.parse import urlsplit
+    u = urlsplit(adres)
+    hata(f"[ffmpeg] opening {adres} failed")
+    hata(f"auth user={u.username} password={u.password}")
+    hata(f"baglanti {u.username} {u.password} reddedildi")
+for ad, deger in sorted(os.environ.items()):
+    if ad.startswith("YANGIN_") and ad.endswith("_URL"):
+        hata(f"fetching {deger} for masking")
+kamera = os.environ.get("YANGIN_KAMERA", "")
+if kamera.startswith("eof"):  # lisans kodu girilmemiş Studio: konsoldan kod ister, girdi gelmez
+    hata("Traceback (most recent call last):")
+    hata("EOFError: EOF when reading a line")
+    sys.exit(1)
+if kamera.startswith("cokus"):  # sonuç bildirmeden çöker; son satırında kullanıcı klasörü geçer
+    hata("hazirlaniyor")
+    hata("modul yuklenemedi: " + os.environ.get("USERPROFILE", "") + "\\x\\y.py")
+    sys.exit(-1)
 yaz(type="lifecycle", state="starting")
 if os.environ.get("YANGIN_KAMERA", "").startswith("lisanssiz"):
     print("Verification code: ", end="", flush=True)
@@ -66,6 +91,9 @@ studio.MOTOR_KAYNAK = gecici / "motor"
 (studio.MOTOR_KAYNAK / "yangin_motor" / "__init__.py").write_text("", encoding="utf-8")
 studio.marketplace = lambda: gecici / "marketplace"
 studio.studio_python = lambda: Path(sys.executable)
+baglanan = []  # iş nesnesine bağlanan süreçler
+_gercek_bagla = studio.yollar.cocuk_bagla
+studio.yollar.cocuk_bagla = lambda s: (baglanan.append(s.pid), _gercek_bagla(s))
 paket = studio.KOSU_KLASORU / "studio"
 paket.mkdir(parents=True)
 (paket / "__init__.py").write_text("", encoding="utf-8")
@@ -154,6 +182,58 @@ denetle("durdurma dosyası temizlendi", not Path(o["dur"]).exists())
 denetle("adres hiçbir dosyaya yazılmadı", not any("GIZLI" in p.read_text(encoding="utf-8", errors="ignore")
                                                   for p in (gecici / "veri").rglob("*") if p.is_file() and p.name != "sahte-ortam.json"))
 denetle("koşu listesi boşaldı", "kapi" not in studio.KOSULAR)
+denetle("canlı adreste OpenCV/FFmpeg günlüğü kapalı", o["cv_log"] == "SILENT" and o["ff_log"] == "-8")
+denetle("koşunun kendi durdurma dosyası (<kod>-<koşu>.dur)", Path(o["dur"]).name == f"kapi-{bilgi['kosu']}.dur")
+denetle("Studio süreci programın iş nesnesine bağlandı", bilgi["surec"].surec.pid in baglanan)
+
+
+def gunluk_metni(kod, aranan, sn=5.0):
+    """Studio'nun stderr'i arka planda okunur: aranan satır günlüğe düşene kadar bekler."""
+    yol = studio.KOSU_KLASORU / f"{kod}.log"
+    son = time.monotonic() + sn
+    while time.monotonic() < son:
+        metin = yol.read_text(encoding="utf-8") if yol.exists() else ""
+        if aranan in metin:
+            return metin
+        time.sleep(0.1)
+    return yol.read_text(encoding="utf-8") if yol.exists() else ""
+
+
+metin = gunluk_metni("kapi", "reddedildi")
+denetle("stderr maskelenip günlüğe yazıldı (adres, kullanıcı, şifre yok)", "reddedildi" in metin and "GIZLI" not in metin
+        and "kullanici" not in metin and "10.0.0.9" not in metin)
+
+print("Kısa kullanıcı adı ve şifre")
+bilgi = asyncio.run(studio.sahne_kur("kisa", {"kamera": {"tur": "rtsp"}}))
+asyncio.run(studio.yeni_kosu(bilgi, "kisa"))
+asyncio.run(studio.kamera_adresi(bilgi, "rtsp://yo:z9@10.0.0.7/akis"))
+asyncio.run(studio.calistir(bilgi))
+ilk_kosu, ilk_dur = bilgi["kosu"], bilgi["surec"].dur
+metin = gunluk_metni("kisa", "reddedildi")
+denetle("iki karakterlik kullanıcı ve şifre de maskelenir", "reddedildi" in metin and "z9" not in metin and " yo " not in metin
+        and "user=****" in metin and "password=****" in metin and "10.0.0.7" not in metin)
+asyncio.run(studio.yeni_kosu(bilgi, "kisa"))
+asyncio.run(studio.calistir(bilgi))  # aynı kameranın yeni koşusu: önceki kapatılır
+ikinci = bilgi["surec"]
+try:
+    ilk_dur.touch()  # önceki koşu için geç gelen durdurma
+except OSError:
+    pass
+time.sleep(0.5)
+denetle("önceki koşunun geç durdurması yeni koşuya dokunmaz", ikinci.dur != ilk_dur and ikinci.calisiyor()
+        and ikinci.dur.name == f"kisa-{bilgi['kosu']}.dur" and bilgi["kosu"] != ilk_kosu)
+asyncio.run(studio.durdur(bilgi))
+ilk_dur.unlink(missing_ok=True)
+
+print("Tek seferlik yerel adres")
+yerel = "http://127.0.0.1:50123/" + "A1b2C3d4E5f6G7h8"
+k = studio.baslat("_yerel", "y1", adim=3, ek_ortam={"YANGIN_DENEME_KARE_URL": yerel})
+k.surec.wait(20)
+metin = gunluk_metni("_yerel", "for masking")
+denetle("ortamla verilen *_URL adresi ve erişim anahtarı günlüğe gitmez", "fetching **** for masking" in metin
+        and "127.0.0.1" not in metin and "A1b2C3d4" not in metin)
+with studio._KILIT:
+    studio.KOSULAR.pop("_yerel", None)
 
 print("Studio reddederse")
 bilgi = asyncio.run(studio.sahne_kur("lisanssiz", {"kamera": {"tur": "dosya"}}))
@@ -168,6 +248,48 @@ try:
     denetle("desteklenmeyen kamera türü açıkça reddedilir", False)
 except studio.StudioHatasi as e:
     denetle("desteklenmeyen kamera türü açıkça reddedilir", "desteklenmiyor" in str(e))
+
+
+def kendiliginden_biten(kod):
+    bilgi = asyncio.run(studio.sahne_kur(kod, {"kamera": {"tur": "dosya"}}))
+    asyncio.run(studio.yeni_kosu(bilgi, kod))
+    asyncio.run(studio.calistir(bilgi))
+    bilgi["surec"].surec.wait(20)
+    return studio.kosu_sorunu(bilgi) or ""
+
+
+neden = kendiliginden_biten("eof")
+denetle("\"EOF when reading a line\": Studio etkinleştirilmemiş, lisans kodu girilmemiş", "etkinleştirilmemiş" in neden
+        and "lisans kodu" in neden and "sihirbaz" in neden and "EOF" not in neden)
+neden = kendiliginden_biten("cokus")
+denetle("işaretli çıkış kodu ve son satır bildirilir", "çıkış kodu -1" in neden and "modul yuklenemedi" in neden)
+metin = gunluk_metni("cokus", "modul yuklenemedi")
+kullanici = os.environ.get("USERPROFILE", "")
+denetle("kullanıcı klasörü ne nedende ne günlükte geçer", bool(kullanici) and kullanici not in neden and kullanici not in metin
+        and kullanici.replace("\\", "/") not in neden and "%USERPROFILE%" in metin)
+
+print("Bağlantı denemesi ve durdurma")
+gercek_ac = kamera.ac
+gec = __import__("threading").Event()
+
+
+def gec_ac(src):  # durdurma, kamera açılırken (kare yazılmadan önce) gelir
+    gec.set()
+    return gercek_ac(src)
+
+
+kamera.ac = gec_ac
+(kamera.yollar.AYAR / "_kare_gec.jpg").unlink(missing_ok=True)
+r = kamera.test({"kod": "gec", "kamera": {"tur": "dosya", "yol": str(video)}}, kamera.yollar.AYAR / "gec.json", dur=gec)
+kamera.ac = gercek_ac
+denetle("kare yazılmadan önce durdurulan deneme kare kaydetmez", r == 2 and not (kamera.yollar.AYAR / "_kare_gec.jpg").exists())
+gercek_yaz = cv2.imwrite
+cv2.imwrite = lambda *a, **k: False  # kare yazılamıyor (disk dolu, klasör yazılamıyor)
+r = kamera.test({"kod": "gec", "kamera": {"tur": "dosya", "yol": str(video)}}, kamera.yollar.AYAR / "gec.json")
+cv2.imwrite = gercek_yaz
+denetle("kaydedilemeyen kare denemeyi başarısız yapar", r == 1)
+r = kamera.test({"kod": "gec", "kamera": {"tur": "dosya", "yol": str(video)}}, kamera.yollar.AYAR / "gec.json")
+denetle("kaydedilen kare denemeyi geçirir", r == 0 and (kamera.yollar.AYAR / "_kare_gec.jpg").exists())
 
 studio.durdur_hepsi()
 kalan = [ad for ad, ok in sonuc if not ok]

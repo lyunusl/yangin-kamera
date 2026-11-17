@@ -143,7 +143,9 @@ def ac(src):
     return cv2.VideoCapture(src, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 8000])
 
 
-def test(ayar: dict, ayar_yol: Path, sifre: str | None = None) -> int:
+def test(ayar: dict, ayar_yol: Path, sifre: str | None = None, dur: threading.Event | None = None) -> int:
+    """Bağlanır, bir kare alır ve bölge çizmek için kaydeder. Dönüş: kare kaydedildiyse 0, kaydedilmediyse 1, bu arada
+    `dur` işaretlendiyse 2 (hiçbir şey yazılmaz)."""
     import cv2
 
     src, goster = kaynak(ayar, sifre)
@@ -169,7 +171,14 @@ def test(ayar: dict, ayar_yol: Path, sifre: str | None = None) -> int:
     print(f"BAĞLANDI: {W}x{H}, {fps:.0f} fps, {time.time() - t0:.1f} sn.", flush=True)
     yol = yollar.AYAR / f"_kare_{kod(ayar, ayar_yol)}.jpg"
     yol.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(yol), kare)  # bölge çizmek için
+    # kare yazılmadan hemen önce son bakış: buraya kadar gelen durdurmada eski kare olduğu gibi kalır. Daha geç gelen
+    # durdurma denemeyi bitmiş bulur: çağıran onu durdurulmuş değil bitmiş gösterir.
+    if dur is not None and dur.is_set():
+        print("Durduruldu.", flush=True)
+        return 2
+    if not cv2.imwrite(str(yol), kare):  # bölge çizmek için
+        print("Kare kaydedilemedi (veri klasörü dolu ya da yazılamıyor olabilir).", flush=True)
+        return 1  # varsa eski kare yerinde duruyor: deneme başarılı gösterilmemeli
     print("Kare kaydedildi.", flush=True)
     if W > 1920:
         print("Not: çözünürlük yüksek; analiz için alt akış (720p) yeterli ve çok daha hızlı.", flush=True)

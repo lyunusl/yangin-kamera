@@ -74,6 +74,17 @@ def ornek_ayari(kod: str) -> dict:
     return ayar
 
 
+def gizle(metin) -> str:
+    """Panelde ya da günlükte gösterilen metindeki kullanıcı klasörünü kısaltır (Windows kullanıcı adı görünmesin)."""
+    metin = str(metin)
+    for ortam, yerine in (("LOCALAPPDATA", "%LOCALAPPDATA%"), ("APPDATA", "%APPDATA%"), ("USERPROFILE", "%USERPROFILE%")):
+        yol = os.environ.get(ortam)
+        if yol:
+            for bicim in {yol, yol.replace("\\", "/")}:
+                metin = metin.replace(bicim, yerine)
+    return metin
+
+
 def ffmpeg() -> str:
     """Programla gelen ffmpeg (imageio-ffmpeg paketi); yoksa PATH'teki."""
     try:

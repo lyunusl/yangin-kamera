@@ -25,12 +25,14 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 import studio_blok
@@ -227,15 +229,91 @@ def sablon() -> Path:
 # ---------------------------------------------------------------- arayüzsüz koşular
 
 
-class Kosu:
-    """Bir kameranın gizli `studio run` süreci."""
+ANAHTAR_ADLARI = r"(?:user(?:name)?|usr|login|kullan[ıi]c[ıi](?:_?ad[ıi])?|pass(?:word|wd)?|pwd|[şs]ifre|parola|auth)"
 
-    def __init__(self, kod: str, kosu: str, surec: subprocess.Popen, dur: Path, gunluk: Path):
+
+def maskeleyici(adres: str = "", yerel_adresler: tuple = ()):
+    """Studio'nun çıktısında akış adresi, kullanıcı adı ya da şifre geçerse gizleyen işlev. Panelin yazdığı ya da gösterdiği
+    her Studio satırı önce bundan geçer: günlükte de hata metninde de maskesiz kopya kalmaz.
+
+    Uzunluğu ne olursa olsun kullanıcı adı ve şifre maskelenir (yüzde kodlu ve çözülmüş biçimleriyle). Üç karakterden kısa
+    değerler, günlüğü parçalamamak için yalnızca ayrı bir sözcük olarak, adresin kullanıcı kısmında ve "anahtar=değer" /
+    "anahtar: değer" biçiminde aranır; uzunlar her yerde.
+
+    `yerel_adresler`: koşuya ortam değişkeniyle verilen tek seferlik yerel adresler (*_URL): adres ve erişim anahtarı da
+    maskelenir."""
+    from urllib.parse import quote, unquote, urlsplit
+
+    uzun, kisa = set(), set()
+    for yerel in yerel_adresler:
+        if yerel:
+            uzun.add(str(yerel))
+            try:
+                anahtar = urlsplit(str(yerel)).path.strip("/")
+            except ValueError:
+                anahtar = ""
+            if len(anahtar) >= 8:
+                uzun.add(anahtar)
+    if adres:
+        uzun |= {adres, unquote(adres)}
+        try:
+            u = urlsplit(adres)
+            for p in (u.username, u.password):
+                if p:
+                    for bicim in {p, unquote(p), quote(unquote(p), safe="")}:
+                        (uzun if len(bicim) >= 3 else kisa).add(bicim)
+        except ValueError:
+            pass
+    sirali = sorted((p for p in uzun if p), key=len, reverse=True)
+    kisa_desenler = []
+    for p in sorted(kisa, key=len, reverse=True):
+        e = re.escape(p)
+        kisa_desenler.append(re.compile(rf"(?i)(\b{ANAHTAR_ADLARI}\s*[=:]\s*['\"]?){e}(?![\w%])"))  # anahtar=değer
+        kisa_desenler.append(re.compile(rf"(?<![\w%]){e}(?![\w%])"))  # ayrı sözcük
+
+    def maskele(metin) -> str:
+        metin = str(metin)
+        for p in sirali:
+            metin = metin.replace(p, "****")
+        metin = re.sub(r"(://)[^/@\s]*@", r"\1****@", metin)  # adresin kullanıcı kısmı (her uzunlukta)
+        for d in kisa_desenler:
+            metin = d.sub(lambda m: (m.group(1) if m.groups() else "") + "****", metin)
+        return metin
+    return maskele
+
+
+_GUNLUK_KILIDI = threading.Lock()
+
+
+class Kosu:
+    """Bir kameranın gizli `studio run` süreci. Studio'nun stdout'u (--json olayları) ve stderr'i bu süreçte okunur; stderr
+    satırları maskelendikten sonra günlüğe yazılır (maskesiz kopya diske hiç gitmez)."""
+
+    def __init__(self, kod: str, kosu: str, surec: subprocess.Popen, dur: Path, gunluk: Path, maskele=None):
         self.kod, self.kosu, self.surec, self.dur, self.gunluk = kod, kosu, surec, dur, gunluk
+        self.maskele = maskele or maskeleyici()
         self.durum = "başlıyor"
         self.sonuc: dict | None = None
+        self.son_satirlar: deque[str] = deque(maxlen=20)  # bu koşunun son stderr satırları (maskeli)
         self._okundu = threading.Event()
+        self._hata_okundu = threading.Event()
         threading.Thread(target=self._oku, name=f"studio-{kod}", daemon=True).start()
+        threading.Thread(target=self._hata_oku, name=f"studio-{kod}-hata", daemon=True).start()
+
+    def _hata_oku(self) -> None:
+        """Studio'nun stderr'i: her satır maskelenir (kullanıcı klasörü de kısaltılır), sonra günlüğe eklenir."""
+        try:
+            for satir in self.surec.stderr:
+                temiz = yollar.gizle(self.maskele(satir.rstrip("\r\n")))
+                if temiz.strip():
+                    self.son_satirlar.append(temiz.strip()[:200])
+                try:
+                    with _GUNLUK_KILIDI, self.gunluk.open("a", encoding="utf-8") as g:
+                        g.write(temiz + "\n")
+                except OSError:
+                    pass  # günlük yazılamazsa satır yalnızca bellekte (maskeli) kalır
+        finally:
+            self._hata_okundu.set()
 
     def _oku(self) -> None:
         """Studio'nun --json olaylarını okur (lifecycle / result)."""
@@ -270,12 +348,25 @@ class Kosu:
         if self.calisiyor():
             return None
         self._okundu.wait(2)
+        self._hata_okundu.wait(2)
         r = self.sonuc or {}
         if r.get("success"):
             return None
-        neden = r.get("error") or r.get("failure_type") or f"çıkış kodu {self.surec.returncode}"
+        neden = r.get("error") or r.get("failure_type")
+        if not neden:
+            kod = self.surec.returncode
+            if kod is not None and kod >= 2 ** 31:  # Windows çıkış kodu işaretsiz yazılır: 4294967295 = -1
+                kod -= 2 ** 32
+            neden = f"süreç sonuç bildirmeden kapandı, çıkış kodu {kod}"
+            if self.son_satirlar:
+                neden += f"; son satır: {self.son_satirlar[-1]}"
+        neden = yollar.gizle(self.maskele(neden))
+        if "EOF when reading a line" in neden:
+            # Lisansı olmayan Studio arayüzsüz başlarken konsoldan lisans kodu ister; panel girdi vermediği için böyle biter.
+            return ("AugeLab Studio bu bilgisayarda etkinleştirilmemiş: lisans kodu girilmemiş. "
+                    "Kurulum sihirbazını açıp AugeLab hesabınızdaki lisans kodunu girin.")
         return (f"AugeLab Studio sahneyi çalıştıramadı ({neden}). Studio lisansınızı kurulum sihirbazından kontrol edin; "
-                f"ayrıntı: {self.gunluk}")
+                f"ayrıntı: {yollar.gizle(self.gunluk)}")
 
     def bitir(self, bekle_sn: float = 3.0) -> None:
         """Önce akışı bitirir (açık olaylar kapanış kaydı bırakır), sonra süreci kapatır."""
@@ -304,7 +395,11 @@ _KILIT = threading.Lock()
 
 
 def baslat(kod: str, kosu: str, adres: str = "", canli: bool = False, adim: int | None = None, ek_ortam: dict | None = None) -> Kosu:
-    """Kameranın sahnesini arayüzsüz başlatır. `canli`: süreç çökerse Studio onu yeniden başlatır."""
+    """Kameranın sahnesini arayüzsüz başlatır. `canli`: süreç çökerse Studio onu yeniden başlatır.
+
+    `adres` (şifre içerebilir) yalnızca sürecin ortamına konur: komut satırına ve dosyaya yazılmaz, Studio'nun çıktısında
+    geçerse maskelenir. Her koşunun durdurma dosyası kendinedir: aynı kameranın önceki koşusu için gelen geç bir durdurma
+    bu koşuyu bitiremez."""
     py = studio_python()
     sahne = sablon()
     bloklari_kur()
@@ -313,13 +408,15 @@ def baslat(kod: str, kosu: str, adres: str = "", canli: bool = False, adim: int 
     if eski is not None:
         eski.bitir(0)
     KOSU_KLASORU.mkdir(parents=True, exist_ok=True)
-    dur = KOSU_KLASORU / f"{kod}.dur"
+    dur = KOSU_KLASORU / f"{kod}-{kosu}.dur"
     dur.unlink(missing_ok=True)
     gunluk = KOSU_KLASORU / f"{kod}.log"
     ortam = {k: v for k, v in os.environ.items() if not k.startswith(("YANGIN_", "PYTHON", "_MEI", "TCL_", "TK_"))}
     ortam.update(YANGIN_KAMERA=f"{kod}#{kosu}", YANGIN_DUR=str(dur), PYTHONIOENCODING="utf-8")
     if adres:
         ortam["YANGIN_KAMERA_ADRES"] = adres  # şifre içerebilir: yalnızca sürecin ortamında, dosyaya yazılmaz
+        # OpenCV / FFmpeg akış adresini yazmasın (yazarsa panel maskeler)
+        ortam.update(OPENCV_LOG_LEVEL="SILENT", OPENCV_FFMPEG_LOGLEVEL="-8")
     ortam.update(ek_ortam or {})
     komut = [str(py), "-m", "studio", "run", str(sahne), "--json", "--verbosity", "30"]
     if canli:
@@ -328,12 +425,19 @@ def baslat(kod: str, kosu: str, adres: str = "", canli: bool = False, adim: int 
         komut += ["--step", str(int(adim))]
     import studio_kurulum
 
-    with gunluk.open("ab") as g, studio_kurulum._temiz_dll_dizini():  # Studio, paketlenmiş Python'un DLL dizinini devralmasın
-        surec = subprocess.Popen(komut, cwd=str(KOSU_KLASORU), env=ortam, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                 stderr=g, text=True, encoding="utf-8", errors="replace", creationflags=PENCERESIZ)
-    k = Kosu(kod, kosu, surec, dur, gunluk)
-    with _KILIT:
+    with _KILIT:  # başlatma ve kayıt tek kilit bölümünde: durdur_hepsi() arada başlayan bir koşuyu kaçırmaz
+        with studio_kurulum._temiz_dll_dizini():  # Studio, paketlenmiş Python'un DLL dizinini devralmasın
+            surec = subprocess.Popen(komut, cwd=str(KOSU_KLASORU), env=ortam, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                     creationflags=PENCERESIZ)
+        yollar.cocuk_bagla(surec)  # program kapanırsa (pencere kapatılsa bile) Studio süreci de kapansın
+        # ortamla verilen tek seferlik yerel adresler (*_URL) de günlüğe gitmesin
+        yerel_adresler = tuple(str(v) for a, v in (ek_ortam or {}).items() if a.endswith("_URL"))
+        k = Kosu(kod, kosu, surec, dur, gunluk, maskeleyici(adres, yerel_adresler))
+        diger = KOSULAR.get(kod)  # aynı kameranın bu arada başlamış bir koşusu
         KOSULAR[kod] = k
+    if diger is not None:
+        diger.bitir(0)
     return k
 
 
@@ -380,7 +484,8 @@ def _deneme_kosusu(sinir_sn: float) -> tuple["Kosu", str | None]:
         raise StudioHatasi("AugeLab Studio deneme sahnesini zamanında bitirmedi.") from None
     finally:
         with _KILIT:
-            KOSULAR.pop("_deneme", None)
+            if KOSULAR.get("_deneme") is k:
+                KOSULAR.pop("_deneme")
     sorun = k.sorun()
     if not sorun:
         try:
